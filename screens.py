@@ -37,7 +37,25 @@ def _nmcli_scan() -> list[str]:
         return []
 
 
+def _nmcli_forget(ssid: str) -> None:
+    # If a saved connection profile already exists for this SSID, `nmcli dev
+    # wifi connect ... password ...` tries to patch it in place — and on
+    # NetworkManager/nmcli here that update silently fails with
+    # "802-11-wireless-security.key-mgmt: property is missing", leaving the
+    # new password unapplied. It then reconnects with whatever secrets were
+    # already saved (stale/wrong ones after an SSID's password changes, or
+    # none at all for a profile that was never fully configured), and fails
+    # with a confusing "no secrets" error instead of the real problem.
+    # Deleting any existing profile first forces nmcli to build a fresh one
+    # with the password actually supplied, sidestepping the bug entirely.
+    subprocess.run(
+        ["nmcli", "connection", "delete", ssid],
+        timeout=10, capture_output=True, text=True
+    )
+
+
 def _nmcli_connect(ssid: str, password: str) -> bool:
+    _nmcli_forget(ssid)
     cmd = ["nmcli", "dev", "wifi", "connect", ssid]
     if password:                      # open networks: omit "password" entirely
         cmd += ["password", password]
