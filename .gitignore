@@ -5,3 +5,6 @@ autogauge.lock
 .lgd-nfy0
 .claude/settings.local.json
 8.png
+.venv-test/
+.pytest_cache/
+elm.log
