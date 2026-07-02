@@ -1,0 +1,9 @@
+{
+  "obd_host": "192.168.4.1",
+  "obd_port": 6801,
+  "touch_x_min": 397,
+  "touch_x_max": 3567,
+  "touch_y_min": 367,
+  "touch_y_max": 3779,
+  "wifi_ssid": "MHD ENET C084"
+}

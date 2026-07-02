@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+logs/
+autogauge.lock
+.lgd-nfy0
+.claude/settings.local.json
+8.png
