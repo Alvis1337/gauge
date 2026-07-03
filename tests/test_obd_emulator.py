@@ -12,6 +12,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -117,6 +118,36 @@ def test_reconnect_after_connection_drop(emulator):
     data = client.poll()
     assert data.rpm is not None
     client.disconnect()
+
+
+def test_concurrent_disconnect_during_poll_does_not_raise(emulator):
+    # Stress test for a race where disconnect() (e.g. the UI's "Reconnect
+    # OBD" button) could null out self._sock while _send_raw() on the OBD
+    # poll thread was mid-flight using it, raising AttributeError. GIL
+    # scheduling makes this timing-dependent — it's not a guaranteed repro
+    # of the old bug, but it does exercise the interleaving that caused it.
+    client = ObdClient()
+    client.connect("127.0.0.1", emulator)
+
+    errors = []
+    stop = threading.Event()
+
+    def _poll_loop():
+        try:
+            while not stop.is_set():
+                client.poll()
+        except Exception as e:  # noqa: BLE001 - the whole point is nothing should raise here
+            errors.append(e)
+
+    t = threading.Thread(target=_poll_loop, daemon=True)
+    t.start()
+    for _ in range(20):
+        client.disconnect()
+        time.sleep(0.01)
+    stop.set()
+    t.join(timeout=5)
+
+    assert errors == []
 
 
 def test_connect_to_dead_port_raises_cleanly():

@@ -84,13 +84,18 @@ class ObdClient:
         log.info("connected to %s:%s", host, port)
 
     def disconnect(self):
-        self.connected = False
-        try:
-            if self._sock:
-                self._sock.close()
-        except Exception:
-            pass
-        self._sock = None
+        # Holds the same lock _send_raw() uses so a disconnect() called from
+        # another thread (e.g. a UI "reconnect" button) can't null out
+        # self._sock while _send_raw() is mid-flight using it — that raced
+        # an AttributeError before this fix.
+        with self._lock:
+            self.connected = False
+            try:
+                if self._sock:
+                    self._sock.close()
+            except Exception:
+                pass
+            self._sock = None
 
     def _init_elm(self) -> bool:
         # ATZ triggers a full ELM327 chip reset, which needs real recovery
@@ -153,13 +158,21 @@ class ObdClient:
 
     def _send_raw(self, cmd: str, timeout: float = None) -> Optional[str]:
         with self._lock:
+            # Captured once under the lock rather than re-read via
+            # self._sock throughout — disconnect() (also lock-held) can't
+            # swap it to None out from under an in-progress call anymore,
+            # but a local reference keeps this method correct even if that
+            # invariant ever changes.
+            sock = self._sock
+            if sock is None:
+                return None
             try:
                 if timeout is not None:
-                    self._sock.settimeout(timeout)
-                self._sock.sendall((cmd + "\r").encode())
+                    sock.settimeout(timeout)
+                sock.sendall((cmd + "\r").encode())
                 buf = b""
                 while b">" not in buf:
-                    chunk = self._sock.recv(256)
+                    chunk = sock.recv(256)
                     if not chunk:
                         break
                     buf += chunk
@@ -173,5 +186,8 @@ class ObdClient:
                 self.connected = False
                 return None
             finally:
-                if timeout is not None and self._sock is not None:
-                    self._sock.settimeout(config.OBD_TIMEOUT)
+                if timeout is not None:
+                    try:
+                        sock.settimeout(config.OBD_TIMEOUT)
+                    except Exception:
+                        pass
