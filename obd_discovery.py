@@ -29,12 +29,18 @@ KNOWN_HOSTS = ["192.168.0.10", "192.168.4.1", "192.168.1.10"]
 # Common ports these adapters listen on for a raw ELM327 AT-command socket.
 KNOWN_PORTS = [35000, 23, 6801, 2000, 3333]
 
-PROBE_TIMEOUT = 1.0
+# A real ELM327 chip needs real recovery time after ATZ triggers a full
+# reset — obd.py's own _init_elm() waits up to 5s for exactly this reason
+# (a shorter default here used to spuriously report a genuine, reachable
+# adapter as "not found" during a real test drive: it never had time to
+# reply before we gave up on it).
+PROBE_TIMEOUT = 5.0
 # Subnet scanning hits many more hosts than the fast-path checks, so each
-# probe uses a shorter timeout — LAN round-trips are fast, and a non-answer
-# within this window is as good as no answer for our purposes.
-SCAN_TIMEOUT = 0.3
-SCAN_WORKERS = 128
+# probe uses a shorter timeout than PROBE_TIMEOUT — but still long enough
+# to catch a real ELM327's ATZ reset delay in the common case, not just
+# the instrumented emulator's near-instant replies.
+SCAN_TIMEOUT = 2.0
+SCAN_WORKERS = 256
 # A misconfigured/bridged interface could hand us something huge (e.g. a
 # /8) — cap how many hosts we're willing to sweep so a single discover()
 # call can't hang for minutes.
@@ -73,8 +79,17 @@ def _looks_like_elm327(host: str, port: int, timeout: float = PROBE_TIMEOUT) -> 
                     break
                 buf += chunk
             text = buf.decode(errors="ignore").upper()
-            return "ELM327" in text or ">" in text
-    except OSError:
+            found = "ELM327" in text or ">" in text
+            if not found:
+                # DEBUG-only — a full subnet sweep hits hundreds of dead
+                # hosts, but this is exactly the evidence needed to tell
+                # "wrong port" (TCP connected, garbage/no reply) apart from
+                # "nothing there" (connection refused/unreachable) after
+                # the fact, for whichever host actually answered at all.
+                log.debug("%s:%s: no ELM327 handshake (raw=%r)", host, port, buf)
+            return found
+    except OSError as e:
+        log.debug("%s:%s: probe failed: %s: %s", host, port, type(e).__name__, e)
         return False
 
 
