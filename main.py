@@ -25,6 +25,7 @@ import settings
 settings.load()
 
 import config
+import netdiag
 import obd_discovery
 from display import ST7796
 from obd import GaugeData, ObdClient
@@ -75,6 +76,10 @@ def _obd_thread(client: ObdClient, data_holder: list, stop_evt: threading.Event,
             client.connect(host, port)
         except Exception:
             log.exception("OBD connect failed (host=%s port=%s)", host, port)
+            # Enough evidence to tell "wrong network / adapter unreachable"
+            # apart from "reachable but the ELM327 handshake didn't
+            # negotiate" from the session log alone, after the fact.
+            log.warning("network diagnostics: %s", netdiag.snapshot(host))
             client.disconnect()
             consecutive_failures += 1
         else:

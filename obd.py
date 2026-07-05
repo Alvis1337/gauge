@@ -62,10 +62,21 @@ class ObdClient:
         host = host or config.OBD_HOST
         port = port or config.OBD_PORT
         log.info("dialing %s:%s (timeout=%.1fs)", host, port, config.OBD_TIMEOUT)
-        self._sock = socket.create_connection(
-            (host, port),
-            timeout=config.OBD_TIMEOUT,
-        )
+        t0 = time.monotonic()
+        try:
+            self._sock = socket.create_connection(
+                (host, port),
+                timeout=config.OBD_TIMEOUT,
+            )
+        except Exception as e:
+            # Distinguishing "refused instantly" from "timed out waiting the
+            # full config.OBD_TIMEOUT" from the elapsed time alone is often
+            # enough to tell a wrong IP/port apart from a genuinely
+            # unreachable network without anything else to go on.
+            log.warning("TCP connect to %s:%s failed after %.1fs: %s: %s",
+                        host, port, time.monotonic() - t0, type(e).__name__, e)
+            raise
+        log.debug("TCP connect to %s:%s took %.0fms", host, port, (time.monotonic() - t0) * 1000)
         self._sock.settimeout(config.OBD_TIMEOUT)
         if not self._init_elm():
             # A timed-out init command leaves whatever the adapter sends
@@ -166,19 +177,27 @@ class ObdClient:
             sock = self._sock
             if sock is None:
                 return None
+            buf = b""
             try:
                 if timeout is not None:
                     sock.settimeout(timeout)
-                sock.sendall((cmd + "\r").encode())
-                buf = b""
+                payload = (cmd + "\r").encode()
+                # Raw bytes (not the decoded/stripped string) so anything a
+                # nonstandard adapter prepends or sends non-ASCII — framing
+                # bytes, NULs, a proprietary preamble — shows up instead of
+                # being silently eaten by decode(errors="ignore").
+                log.debug("PID %s: TX %r", cmd, payload)
+                t0 = time.monotonic()
+                sock.sendall(payload)
                 while b">" not in buf:
                     chunk = sock.recv(256)
                     if not chunk:
                         break
                     buf += chunk
+                log.debug("PID %s: RX %r (%.0fms)", cmd, buf, (time.monotonic() - t0) * 1000)
                 return buf.decode(errors="ignore").strip()
             except Exception as e:
-                log.debug("PID %s: socket error: %r", cmd, e)
+                log.debug("PID %s: socket error: %r (partial RX before error: %r)", cmd, e, buf)
                 # Without this, a dropped connection (adapter reset, WiFi
                 # blip) never gets noticed: the poll loop keeps hammering
                 # the dead socket at full speed forever instead of backing
