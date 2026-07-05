@@ -11,6 +11,10 @@ _LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 _LOG_PATH = os.path.join(_LOG_DIR, "gauge.log")
 
 
+def log_path() -> str:
+    return _LOG_PATH
+
+
 def setup() -> str:
     os.makedirs(_LOG_DIR, exist_ok=True)
 

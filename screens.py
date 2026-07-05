@@ -7,6 +7,8 @@ import subprocess
 import threading
 import time
 import pygame
+import gauge_logging
+import obd_discovery
 import settings
 import ui
 from ui import W, H
@@ -211,12 +213,15 @@ class WifiPasswordScreen:
 class ObdConfigScreen:
     _FIELD_HOST = "host"
     _FIELD_PORT = "port"
+    _SCAN_RECT  = (350, 46, 122, 34)
 
     def __init__(self):
         self._field = self._FIELD_HOST
         self._host_buf = settings.get("obd_host")
         self._port_buf = str(settings.get("obd_port"))
         self._saved = False
+        self._scanning = False
+        self._scan_status = ""
 
     def draw(self, surf: pygame.Surface):
         surf.fill(ui.BG)
@@ -232,10 +237,22 @@ class ObdConfigScreen:
 
         # Port field
         p_color = ui.ACCENT if self._field == self._FIELD_PORT else ui.BORDER
-        pygame.draw.rect(surf, ui.CARD, (W // 2 + 5, 46, W // 2 - 15, 30), border_radius=4)
-        pygame.draw.rect(surf, p_color, (W // 2 + 5, 46, W // 2 - 15, 30), width=2, border_radius=4)
+        pygame.draw.rect(surf, ui.CARD, (W // 2 + 5, 46, W // 2 - 15 - 130, 30), border_radius=4)
+        pygame.draw.rect(surf, p_color, (W // 2 + 5, 46, W // 2 - 15 - 130, 30), width=2, border_radius=4)
         ui.text(surf, "Port", W // 2 + 9, 48, ui._F_SM, ui.SUBTEXT)
         ui.text(surf, self._port_buf, W // 2 + 9, 62, ui._F_SM, ui.TEXT)
+
+        # Auto-detect
+        ui.rect_btn(surf, "Scanning…" if self._scanning else "Auto-detect",
+                    self._SCAN_RECT, ui.ACCENT if not self._scanning else ui.BORDER,
+                    font=ui._F_SM, radius=4)
+        if self._scan_status and not self._scanning:
+            # Right-anchored to the screen edge, not centered on the button —
+            # a result like "Found 192.168.4.1:6801" is wider than the
+            # 130px-wide button and was running off the right edge of the
+            # 480px screen when centered under it.
+            ui.text(surf, self._scan_status, W - 8,
+                    self._SCAN_RECT[1] + self._SCAN_RECT[3] + 4, ui._F_SM, ui.SUBTEXT, anchor="topright")
 
         if self._saved:
             ui.text(surf, "Saved!", W // 2, 84, ui._F_SM, ui.SUCCESS, anchor="midtop")
@@ -247,10 +264,13 @@ class ObdConfigScreen:
             return None
         if ui.hit((8, 8, 70, 28), pos):
             return "settings"
+        if ui.hit(self._SCAN_RECT, pos):
+            self._start_scan()
+            return None
         if ui.hit((10, 46, W // 2 - 15, 30), pos):
             self._field = self._FIELD_HOST
             return None
-        if ui.hit((W // 2 + 5, 46, W // 2 - 15, 30), pos):
+        if ui.hit((W // 2 + 5, 46, W // 2 - 15 - 130, 30), pos):
             self._field = self._FIELD_PORT
             return None
 
@@ -273,6 +293,24 @@ class ObdConfigScreen:
             self._port_buf = buf
         self._saved = False
         return None
+
+    def _start_scan(self):
+        if self._scanning:
+            return
+        self._scanning = True
+        self._scan_status = ""
+
+        def _work():
+            found = obd_discovery.discover()
+            if found:
+                self._host_buf, self._port_buf = found[0], str(found[1])
+                self._scan_status = f"Found {found[0]}:{found[1]}"
+                self._saved = False
+            else:
+                self._scan_status = "No adapter found"
+            self._scanning = False
+
+        threading.Thread(target=_work, daemon=True).start()
 
 
 # ── Touch calibration screen ──────────────────────────────────────────────────
@@ -345,28 +383,191 @@ class TouchCalScreen:
         settings.set("touch_y_max", y_max)
 
 
+# ── Logs screen ──────────────────────────────────────────────────────────────
+
+_LOG_LINE_H         = 16
+_LOG_LINES_PER_PAGE = 14
+_LOG_MAX_LOADED     = 1000   # most recent lines read from disk, before level filtering
+_LOG_REFRESH_S      = 2.0
+
+
+_KNOWN_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+
+def _parse_log_lines(raw_lines: list[str]) -> list[tuple[str, str]]:
+    """Returns (filter_level, compact display text) tuples.
+
+    log.exception() dumps a multi-line Python traceback after the actual
+    formatted log line — those continuation lines don't match the
+    "date time LEVEL name message" format at all, so treating everything
+    as a single-line record turned a traceback into a wall of unlabeled,
+    uncolored noise indistinguishable from the log lines around it.
+    Continuation lines are tagged with the same filter_level as whatever
+    real log line preceded them, so a whole exception dump reads (and
+    filters) as one unit rather than orphaned garbage.
+    """
+    out = []
+    prev_level = "INFO"
+    for line in raw_lines:
+        parts = line.rstrip("\n").split(None, 4)
+        if len(parts) >= 5 and parts[2] in _KNOWN_LEVELS:
+            _date, time_ms, level, _name, msg = parts
+            hhmmss = time_ms.split(".")[0]
+            prev_level = level
+            out.append((level, f"{hhmmss} {level[0]} {msg}"[:60]))
+        else:
+            out.append((prev_level, ("    " + line.rstrip("\n"))[:60]))
+    return out
+
+
+class LogsScreen:
+    def __init__(self):
+        self._show_debug = False
+        self._page = 0
+        self._lines: list[tuple[str, str]] = []
+        self._last_load = 0.0
+        self._load()
+
+    def _load(self):
+        try:
+            with open(gauge_logging.log_path()) as f:
+                raw = f.readlines()[-_LOG_MAX_LOADED:]
+        except Exception:
+            raw = []
+        parsed = _parse_log_lines(raw)
+        self._lines = parsed if self._show_debug else [p for p in parsed if p[0] != "DEBUG"]
+        self._last_load = time.monotonic()
+
+    @property
+    def _total_pages(self) -> int:
+        return max(1, (len(self._lines) + _LOG_LINES_PER_PAGE - 1) // _LOG_LINES_PER_PAGE)
+
+    def _page_lines(self) -> list[tuple[str, str]]:
+        # page 0 = most recent lines (end of file); higher pages = older.
+        end = len(self._lines) - self._page * _LOG_LINES_PER_PAGE
+        start = max(0, end - _LOG_LINES_PER_PAGE)
+        return self._lines[start:end]
+
+    @staticmethod
+    def _level_color(level: str):
+        if level in ("ERROR", "CRITICAL"):
+            return ui.DANGER
+        if level == "WARNING":
+            return (255, 170, 68)
+        return ui.TEXT
+
+    _BACK_RECT   = (8, 8, 70, 26)
+    _FILTER_RECT = (W - 78, 8, 70, 26)
+    _PREV_RECT   = (8, H - 30, 90, 24)
+    _NEXT_RECT   = (W - 98, H - 30, 90, 24)
+
+    def draw(self, surf: pygame.Surface):
+        # Auto-refresh while looking at the latest page, so it behaves like a live tail.
+        if self._page == 0 and time.monotonic() - self._last_load > _LOG_REFRESH_S:
+            self._load()
+
+        surf.fill(ui.BG)
+        ui.rect_btn(surf, "← Back", self._BACK_RECT, ui.PANEL, font=ui._F_SM)
+        ui.text(surf, "Logs", W // 2, 8, ui._F_LG, anchor="midtop")
+        ui.rect_btn(surf, "All" if self._show_debug else "Info+",
+                    self._FILTER_RECT, ui.CARD, font=ui._F_SM)
+
+        y = 40
+        lines = self._page_lines()
+        if not lines:
+            ui.text(surf, "No log lines", W // 2, H // 2, ui._F_MD, ui.SUBTEXT, anchor="center")
+        for level, text in lines:
+            ui.text(surf, text, 8, y, ui._F_SM, self._level_color(level))
+            y += _LOG_LINE_H
+
+        ui.rect_btn(surf, "‹ Newer", self._PREV_RECT, ui.CARD, font=ui._F_SM)
+        ui.text(surf, f"{self._page + 1}/{self._total_pages}", W // 2, H - 26,
+                ui._F_SM, ui.SUBTEXT, anchor="midtop")
+        ui.rect_btn(surf, "Older ›", self._NEXT_RECT, ui.CARD, font=ui._F_SM)
+
+    def handle_touch(self, pos) -> str | None:
+        if pos is None:
+            return None
+        if ui.hit(self._BACK_RECT, pos):
+            return "settings"
+        if ui.hit(self._FILTER_RECT, pos):
+            self._show_debug = not self._show_debug
+            self._load()
+            self._page = 0
+            return None
+        if ui.hit(self._PREV_RECT, pos):
+            self._page = max(0, self._page - 1)
+            return None
+        if ui.hit(self._NEXT_RECT, pos):
+            self._page = min(self._total_pages - 1, self._page + 1)
+            return None
+        return None
+
+
 # ── Main settings menu ────────────────────────────────────────────────────────
 
 class SettingsScreen:
-    _ITEMS = [
+    _NAV_ITEMS = [
         ("WiFi",             "wifi_list"),
         ("OBD Adapter",      "obd_config"),
         ("Touch Calibrate",  "touch_cal"),
-        ("Back to Gauges",   "gauges"),
+        ("Logs",             "logs"),
     ]
+    _BACK_LABEL, _BACK_KEY = "Back to Gauges", "gauges"
+    _ROW_H       = 38
+    _ROW_GAP     = 4
+    _TOP         = 48
+    _STATUS_TTL  = 3.0
+
+    def __init__(self):
+        self._status = ""
+        self._status_until = 0.0
+
+    def set_status(self, msg: str):
+        self._status = msg
+        self._status_until = time.monotonic() + self._STATUS_TTL
+
+    def _nav_rect(self, i: int):
+        y = self._TOP + i * (self._ROW_H + self._ROW_GAP)
+        return (30, y, W - 60, self._ROW_H)
+
+    def _action_row_y(self) -> int:
+        return self._TOP + len(self._NAV_ITEMS) * (self._ROW_H + self._ROW_GAP)
+
+    def _reconnect_rect(self):
+        return (20, self._action_row_y(), W // 2 - 30, self._ROW_H)
+
+    def _restart_rect(self):
+        return (W // 2 + 10, self._action_row_y(), W // 2 - 30, self._ROW_H)
+
+    def _back_rect(self):
+        y = self._action_row_y() + self._ROW_H + self._ROW_GAP + 18  # room for status line
+        return (30, y, W - 60, self._ROW_H)
 
     def draw(self, surf: pygame.Surface):
         surf.fill(ui.BG)
         ui.text(surf, "Settings", W // 2, 14, ui._F_XL, anchor="midtop")
-        for i, (label, _) in enumerate(self._ITEMS):
-            y = 64 + i * 54
-            is_back = label == "Back to Gauges"
-            color = ui.PANEL if is_back else ui.CARD
-            ui.rect_btn(surf, label, (30, y, W - 60, 44), color, font=ui._F_LG, radius=8)
+
+        for i, (label, _) in enumerate(self._NAV_ITEMS):
+            ui.rect_btn(surf, label, self._nav_rect(i), ui.CARD, font=ui._F_LG, radius=8)
+
+        ui.rect_btn(surf, "Reconnect OBD", self._reconnect_rect(), ui.CARD, font=ui._F_MD, radius=8)
+        ui.rect_btn(surf, "Restart App", self._restart_rect(), ui.DANGER, font=ui._F_MD, radius=8)
+
+        if self._status and time.monotonic() < self._status_until:
+            status_y = self._action_row_y() + self._ROW_H + 6
+            ui.text(surf, self._status, W // 2, status_y, ui._F_SM, ui.ACCENT, anchor="midtop")
+
+        ui.rect_btn(surf, self._BACK_LABEL, self._back_rect(), ui.PANEL, font=ui._F_LG, radius=8)
 
     def handle_touch(self, pos) -> str | None:
-        for i, (_, key) in enumerate(self._ITEMS):
-            y = 64 + i * 54
-            if ui.hit((30, y, W - 60, 44), pos):
+        for i, (_, key) in enumerate(self._NAV_ITEMS):
+            if ui.hit(self._nav_rect(i), pos):
                 return key
+        if ui.hit(self._reconnect_rect(), pos):
+            return "action:reconnect_obd"
+        if ui.hit(self._restart_rect(), pos):
+            return "action:restart_app"
+        if ui.hit(self._back_rect(), pos):
+            return self._BACK_KEY
         return None

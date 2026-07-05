@@ -8,6 +8,7 @@ import fcntl
 import logging
 import os
 import signal
+import sys
 import threading
 import time
 
@@ -24,13 +25,14 @@ import settings
 settings.load()
 
 import config
+import obd_discovery
 from display import ST7796
 from obd import GaugeData, ObdClient
 from renderer import GaugeRenderer
 from touch import TouchController
 from screens import (
     SettingsScreen, WifiListScreen, WifiPasswordScreen,
-    ObdConfigScreen, TouchCalScreen,
+    ObdConfigScreen, TouchCalScreen, LogsScreen,
 )
 
 _CORNER_RECT = (0, 0, 80, 60)       # physical top-left = pygame (0,0)
@@ -56,37 +58,84 @@ def _acquire_singleton_lock():
     return lock_file  # keep alive for process lifetime; exit releases the flock automatically
 
 
+_DISCOVERY_AFTER_FAILURES = 3   # consecutive failed *connect* attempts before trying auto-discovery
+
+
 def _obd_thread(client: ObdClient, data_holder: list, stop_evt: threading.Event,
-                host_holder: list):
+                host_holder: list, force_reconnect_evt: threading.Event):
     retry_delay = 2.0
+    consecutive_failures = 0   # only counts failed connect() attempts, not mid-session drops
     while not stop_evt.is_set():
         host = settings.get("obd_host")
         port = settings.get("obd_port")
         host_holder[0] = host
+        force_reconnect_evt.clear()
+
         try:
             client.connect(host, port)
-            retry_delay = 2.0
-            while not stop_evt.is_set() and client.connected:
-                # Reconnect if settings changed
-                if settings.get("obd_host") != host or settings.get("obd_port") != port:
-                    log.info("OBD host/port changed in settings, reconnecting")
-                    break
-                data_holder[0] = client.poll()
-                time.sleep(config.POLL_INTERVAL)
         except Exception:
-            log.exception("OBD error (host=%s port=%s)", host, port)
+            log.exception("OBD connect failed (host=%s port=%s)", host, port)
             client.disconnect()
-        if not stop_evt.is_set():
+            consecutive_failures += 1
+        else:
+            retry_delay = 2.0
+            consecutive_failures = 0
+            try:
+                while not stop_evt.is_set() and client.connected:
+                    # Reconnect if settings changed
+                    if settings.get("obd_host") != host or settings.get("obd_port") != port:
+                        log.info("OBD host/port changed in settings, reconnecting")
+                        break
+                    if force_reconnect_evt.is_set():
+                        log.info("manual reconnect requested, forcing fresh connection")
+                        client.disconnect()
+                        break
+                    data_holder[0] = client.poll()
+                    time.sleep(config.POLL_INTERVAL)
+            except Exception:
+                log.exception("OBD polling error (host=%s port=%s)", host, port)
+                client.disconnect()
+
+        if stop_evt.is_set():
+            break
+
+        # The configured host is genuinely unreachable (not just a blip
+        # mid-session) — see if it moved to a different IP/port before
+        # burning through the rest of the backoff schedule.
+        if consecutive_failures >= _DISCOVERY_AFTER_FAILURES:
+            log.info("OBD adapter at %s:%s unreachable after %d attempts, trying auto-discovery",
+                      host, port, consecutive_failures)
+            found = obd_discovery.discover()
+            if found and found != (host, port):
+                new_host, new_port = found
+                log.info("auto-discovery found adapter at %s:%s, saving as new default",
+                          new_host, new_port)
+                settings.set("obd_host", new_host)
+                settings.set("obd_port", new_port)
+                retry_delay = 2.0
+            consecutive_failures = 0
+
+        if force_reconnect_evt.is_set():
+            retry_delay = 2.0  # a manual reconnect shouldn't wait out a stale backoff
+        else:
             log.info("retrying OBD connection in %.0fs", retry_delay)
-            time.sleep(retry_delay)
-            retry_delay = min(retry_delay * 2, 30.0)
+
+        deadline = time.monotonic() + retry_delay
+        while (time.monotonic() < deadline and not stop_evt.is_set()
+               and not force_reconnect_evt.is_set()):
+            time.sleep(0.1)
+        retry_delay = min(retry_delay * 2, 30.0)
 
 
-def main():
+def main() -> bool:
+    """Runs the app until shutdown; returns True if a restart was requested
+    from the settings UI (caller is expected to os.execv in that case)."""
     _lock_file = _acquire_singleton_lock()
     pygame.init()
 
     stop_evt = threading.Event()
+    force_reconnect_evt = threading.Event()
+    restart_requested = threading.Event()
 
     def _handle_term(signum, frame):
         # pygame/SDL installs its own SIGTERM/SIGINT handler that turns the
@@ -109,7 +158,7 @@ def main():
     host_ref = [""]
 
     threading.Thread(target=_obd_thread,
-                     args=(client, data_ref, stop_evt, host_ref),
+                     args=(client, data_ref, stop_evt, host_ref, force_reconnect_evt),
                      daemon=True).start()
 
     # Screen stack
@@ -128,7 +177,23 @@ def main():
             screen_obj = WifiPasswordScreen(ssid)
         elif key == "obd_config":  screen_obj = ObdConfigScreen()
         elif key == "touch_cal":   screen_obj = TouchCalScreen(touch)
+        elif key == "logs":        screen_obj = LogsScreen()
         else:                      screen_obj = None
+
+    def _handle_action(action: str) -> str:
+        """Runs a settings-screen action button; returns a short status
+        string for on-screen feedback instead of switching screens."""
+        if action == "reconnect_obd":
+            log.info("manual OBD reconnect requested from settings UI")
+            force_reconnect_evt.set()
+            return "Reconnecting..."
+        if action == "restart_app":
+            log.info("manual app restart requested from settings UI")
+            restart_requested.set()
+            stop_evt.set()
+            return "Restarting..."
+        log.warning("unknown settings action: %r", action)
+        return ""
 
     _was_touched = False   # debounce state
 
@@ -161,14 +226,19 @@ def main():
                 if screen_obj:
                     next_key = screen_obj.handle_touch(tap)
                     if next_key:
-                        if hasattr(screen_obj, 'cancel'):
-                            screen_obj.cancel()
-                        if next_key == "gauges":
-                            current = "gauges"
-                            screen_obj = None
+                        if next_key.startswith("action:"):
+                            status = _handle_action(next_key[len("action:"):])
+                            if hasattr(screen_obj, "set_status"):
+                                screen_obj.set_status(status)
                         else:
-                            current = next_key
-                            make_screen(next_key)
+                            if hasattr(screen_obj, 'cancel'):
+                                screen_obj.cancel()
+                            if next_key == "gauges":
+                                current = "gauges"
+                                screen_obj = None
+                            else:
+                                current = next_key
+                                make_screen(next_key)
                     if screen_obj:
                         screen_obj.draw(screen)
 
@@ -182,10 +252,13 @@ def main():
         display.close()
         pygame.quit()
 
+    return restart_requested.is_set()
+
 
 if __name__ == "__main__":
+    _restart = False
     try:
-        main()
+        _restart = main()
     except Exception:
         log.exception("fatal crash, exiting")
         raise
@@ -194,3 +267,7 @@ if __name__ == "__main__":
         raise
     finally:
         log.info("=== AutoGauge exiting ===")
+
+    if _restart:
+        log.info("re-executing process for restart")
+        os.execv(sys.executable, [sys.executable, "-u"] + sys.argv)
