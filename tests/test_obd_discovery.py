@@ -115,12 +115,14 @@ def test_discover_falls_back_to_known_hosts_when_gateway_misses(monkeypatch):
 def test_discover_returns_none_when_nothing_found(monkeypatch):
     monkeypatch.setattr(obd_discovery, "_default_gateway", lambda: None)
     monkeypatch.setattr(obd_discovery, "_probe_host", lambda host, ports, timeout: None)
+    monkeypatch.setattr(obd_discovery, "_own_subnets", lambda: [])
     assert obd_discovery.discover() is None
 
 
 def test_discover_does_not_probe_gateway_twice_if_also_a_known_host(monkeypatch):
     # If the gateway happens to equal one of KNOWN_HOSTS, it shouldn't be probed twice.
     monkeypatch.setattr(obd_discovery, "_default_gateway", lambda: obd_discovery.KNOWN_HOSTS[0])
+    monkeypatch.setattr(obd_discovery, "_own_subnets", lambda: [])
     calls = []
 
     def fake_probe_host(host, ports, timeout):
@@ -130,3 +132,59 @@ def test_discover_does_not_probe_gateway_twice_if_also_a_known_host(monkeypatch)
 
     obd_discovery.discover()
     assert calls.count(obd_discovery.KNOWN_HOSTS[0]) == 1
+
+
+def test_own_subnets_parses_ip_addr_output(monkeypatch):
+    def fake_check_output(cmd, **kwargs):
+        return (
+            "1: lo    inet 127.0.0.1/8 scope host lo\n"
+            "3: wlan0    inet 192.168.4.23/24 brd 192.168.4.255 scope global dynamic wlan0\n"
+        )
+    monkeypatch.setattr(subprocess, "check_output", fake_check_output)
+    nets = obd_discovery._own_subnets()
+    assert [str(n) for n in nets] == ["192.168.4.0/24"]
+
+
+def test_own_subnets_returns_empty_on_failure(monkeypatch):
+    def fake_check_output(cmd, **kwargs):
+        raise subprocess.CalledProcessError(1, cmd)
+    monkeypatch.setattr(subprocess, "check_output", fake_check_output)
+    assert obd_discovery._own_subnets() == []
+
+
+def test_scan_subnet_returns_first_matching_host_port(monkeypatch):
+    import ipaddress
+
+    def fake_looks_like(host, port, timeout=1.0):
+        return host == "192.168.4.50" and port == 6801
+    monkeypatch.setattr(obd_discovery, "_looks_like_elm327", fake_looks_like)
+
+    net = ipaddress.ip_network("192.168.4.0/24")
+    found = obd_discovery._scan_subnet(net, [23, 6801], timeout=0.05)
+    assert found == ("192.168.4.50", 6801)
+
+
+def test_scan_subnet_skips_networks_larger_than_cap(monkeypatch):
+    import ipaddress
+
+    monkeypatch.setattr(obd_discovery, "MAX_SCAN_HOSTS", 10)
+    calls = []
+    monkeypatch.setattr(
+        obd_discovery, "_looks_like_elm327",
+        lambda host, port, timeout=1.0: calls.append(host) or False,
+    )
+    net = ipaddress.ip_network("192.168.4.0/24")  # 254 hosts > cap of 10
+    assert obd_discovery._scan_subnet(net, [23]) is None
+    assert calls == []
+
+
+def test_discover_falls_back_to_subnet_scan_when_known_hosts_miss(monkeypatch):
+    import ipaddress
+
+    monkeypatch.setattr(obd_discovery, "_default_gateway", lambda: None)
+    monkeypatch.setattr(obd_discovery, "_probe_host", lambda host, ports, timeout: None)
+    net = ipaddress.ip_network("10.5.5.0/24")
+    monkeypatch.setattr(obd_discovery, "_own_subnets", lambda: [net])
+    monkeypatch.setattr(obd_discovery, "_scan_subnet", lambda network, ports, timeout=0.3: ("10.5.5.77", 35000))
+
+    assert obd_discovery.discover() == ("10.5.5.77", 35000)

@@ -4,11 +4,18 @@ Auto-discovery for WiFi OBD-II (ELM327-compatible) adapters.
 Most cheap WiFi ELM327/MHD-style adapters run their own DHCP AP and listen
 on a small, well-known set of TCP ports at either their own gateway
 address (they *are* the router once you're on their WiFi) or one of a
-handful of fixed factory-default IPs. discover() probes those candidates
-with a real ELM327 ATZ handshake — not just "is the port open" — so some
-unrelated device happening to have an open port on the LAN can't produce
-a false positive.
+handful of fixed factory-default IPs. Those two fast checks come first.
+
+But plenty of real-world setups don't match that shape — the adapter can
+be a client on an existing WiFi network rather than an AP of its own, or
+just use a non-default IP — so if nothing answers there, discover() falls
+back to scanning every host on the subnet(s) the Pi actually has a DHCP
+lease on (read from `ip addr`, not assumed), rather than giving up. Every
+candidate is verified with a real ELM327 ATZ handshake — not just "is the
+port open" — so some unrelated device with an open port on the LAN can't
+produce a false positive.
 """
+import ipaddress
 import logging
 import socket
 import subprocess
@@ -23,6 +30,15 @@ KNOWN_HOSTS = ["192.168.0.10", "192.168.4.1", "192.168.1.10"]
 KNOWN_PORTS = [35000, 23, 6801, 2000, 3333]
 
 PROBE_TIMEOUT = 1.0
+# Subnet scanning hits many more hosts than the fast-path checks, so each
+# probe uses a shorter timeout — LAN round-trips are fast, and a non-answer
+# within this window is as good as no answer for our purposes.
+SCAN_TIMEOUT = 0.3
+SCAN_WORKERS = 128
+# A misconfigured/bridged interface could hand us something huge (e.g. a
+# /8) — cap how many hosts we're willing to sweep so a single discover()
+# call can't hang for minutes.
+MAX_SCAN_HOSTS = 512
 
 
 def _default_gateway() -> str | None:
@@ -73,13 +89,73 @@ def _probe_host(host: str, ports: list[int], timeout: float) -> int | None:
     return None
 
 
+def _own_subnets() -> list["ipaddress.IPv4Network"]:
+    """Every IPv4 subnet the Pi currently holds a DHCP lease on. The adapter
+    doesn't have to be the gateway or a factory-default IP — this is what
+    lets discovery find it anywhere on whatever network the Pi joined,
+    instead of only the handful of shapes KNOWN_HOSTS anticipates."""
+    nets: list[ipaddress.IPv4Network] = []
+    try:
+        out = subprocess.check_output(
+            ["ip", "-4", "-o", "addr", "show", "scope", "global"],
+            timeout=3, text=True, stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        log.debug("could not enumerate local interfaces/subnets", exc_info=True)
+        return nets
+
+    for line in out.splitlines():
+        # e.g. "3: wlan0    inet 192.168.4.23/24 brd 192.168.4.255 scope global ..."
+        parts = line.split()
+        if "inet" not in parts:
+            continue
+        cidr = parts[parts.index("inet") + 1]
+        try:
+            net = ipaddress.ip_interface(cidr).network
+        except ValueError:
+            continue
+        if net.is_loopback or net.is_link_local:
+            continue
+        nets.append(net)
+    return nets
+
+
+def _scan_subnet(network: "ipaddress.IPv4Network", ports: list[int],
+                  timeout: float = SCAN_TIMEOUT) -> tuple[str, int] | None:
+    """Sweep every host on `network` across every candidate port, in
+    parallel, and return the first one that answers like a real ELM327
+    adapter. This is the broad, slow fallback — only reached once the
+    fast-path gateway/known-host checks have already come up empty."""
+    hosts = [str(h) for h in network.hosts()]
+    if len(hosts) > MAX_SCAN_HOSTS:
+        log.warning("subnet %s has %d hosts, skipping full scan (cap is %d)",
+                    network, len(hosts), MAX_SCAN_HOSTS)
+        return None
+
+    log.info("scanning subnet %s (%d hosts x %d ports) for OBD adapter",
+              network, len(hosts), len(ports))
+    pool = ThreadPoolExecutor(max_workers=SCAN_WORKERS)
+    try:
+        futures = {pool.submit(_looks_like_elm327, h, p, timeout): (h, p)
+                   for h in hosts for p in ports}
+        for future in as_completed(futures):
+            if future.result():
+                return futures[future]
+    finally:
+        # Don't block returning a hit on the hundreds of other in-flight
+        # probes — let them finish in the background and get GC'd.
+        pool.shutdown(wait=False, cancel_futures=True)
+    return None
+
+
 def discover(candidate_ports: list[int] = None, timeout: float = PROBE_TIMEOUT) -> tuple[str, int] | None:
     """Probe likely host:port combinations for a live ELM327 adapter.
 
-    Tries the current default gateway first (most likely to be the
-    adapter itself), then falls back to known factory-default IPs.
-    Returns (host, port) of the first responder, or None if nothing
-    answered like a real ELM327 adapter.
+    Fast path: the current default gateway (most likely to be the adapter
+    itself) and a handful of known factory-default IPs. If neither hits,
+    falls back to scanning every host on the subnet(s) the Pi actually has
+    a DHCP lease on. Returns (host, port) of the first responder, or None
+    if nothing answered like a real ELM327 adapter.
     """
     ports = candidate_ports or KNOWN_PORTS
     gateway = _default_gateway()
@@ -94,6 +170,13 @@ def discover(candidate_ports: list[int] = None, timeout: float = PROBE_TIMEOUT) 
         port = _probe_host(host, ports, timeout)
         if port is not None:
             log.info("discovered OBD adapter at %s:%s", host, port)
+            return host, port
+
+    for net in _own_subnets():
+        found = _scan_subnet(net, ports)
+        if found is not None:
+            host, port = found
+            log.info("discovered OBD adapter at %s:%s via subnet scan of %s", host, port, net)
             return host, port
 
     log.info("OBD auto-discovery found nothing")

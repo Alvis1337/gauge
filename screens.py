@@ -215,6 +215,8 @@ class ObdConfigScreen:
     _FIELD_PORT = "port"
     _SCAN_RECT  = (350, 46, 122, 34)
 
+    _STATUS_TTL = 3.0
+
     def __init__(self):
         self._field = self._FIELD_HOST
         self._host_buf = settings.get("obd_host")
@@ -222,6 +224,12 @@ class ObdConfigScreen:
         self._saved = False
         self._scanning = False
         self._scan_status = ""
+        self._status = ""
+        self._status_until = 0.0
+
+    def set_status(self, msg: str):
+        self._status = msg
+        self._status_until = time.monotonic() + self._STATUS_TTL
 
     def draw(self, surf: pygame.Surface):
         surf.fill(ui.BG)
@@ -254,7 +262,9 @@ class ObdConfigScreen:
             ui.text(surf, self._scan_status, W - 8,
                     self._SCAN_RECT[1] + self._SCAN_RECT[3] + 4, ui._F_SM, ui.SUBTEXT, anchor="topright")
 
-        if self._saved:
+        if self._status and time.monotonic() < self._status_until:
+            ui.text(surf, self._status, W // 2, 84, ui._F_SM, ui.SUCCESS, anchor="midtop")
+        elif self._saved:
             ui.text(surf, "Saved!", W // 2, 84, ui._F_SM, ui.SUCCESS, anchor="midtop")
 
         ui.draw_numpad(surf)
@@ -284,7 +294,11 @@ class ObdConfigScreen:
             settings.set("obd_host", self._host_buf)
             settings.set("obd_port", int(self._port_buf or "0"))
             self._saved = True
-            return None
+            # Without this, a newly-saved host/port only takes effect once
+            # the OBD thread's current backoff wait expires — up to 30s if
+            # it had already backed off — which reads as "nothing happened"
+            # after typing in an IP by hand.
+            return "action:reconnect_obd"
         else:
             buf += k
         if self._field == self._FIELD_HOST:
