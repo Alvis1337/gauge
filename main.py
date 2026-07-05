@@ -13,6 +13,12 @@ import threading
 import time
 
 os.environ["SDL_VIDEODRIVER"] = "offscreen"
+# This app never plays sound, but pygame.init() initializes the audio
+# mixer along with everything else — on this Pi that meant SDL polling a
+# real ALSA device that isn't fed properly, spamming ~2 underrun errors/sec
+# into the journal for the service's entire runtime (3000+ lines in 27
+# minutes), drowning out anything useful in `journalctl -u autogauge`.
+os.environ["SDL_AUDIODRIVER"] = "dummy"
 
 import pygame
 
