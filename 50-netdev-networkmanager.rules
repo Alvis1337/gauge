@@ -1,9 +1,0 @@
-// Allow netdev-group members (e.g. the headless autogauge service, which has
-// no logind session and would otherwise be denied) full NetworkManager
-// control without requiring an active/local desktop session.
-polkit.addRule(function(action, subject) {
-    if (action.id.indexOf("org.freedesktop.NetworkManager.") == 0 &&
-        subject.isInGroup("netdev")) {
-        return polkit.Result.YES;
-    }
-});
