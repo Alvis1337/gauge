@@ -51,3 +51,33 @@ jobs:
             firmware/.pio/build/${{ matrix.env }}/bootloader.bin
             firmware/.pio/build/${{ matrix.env }}/partitions.bin
           if-no-files-found: error
+
+  # Publishes the real app's firmware.bin to a stable "latest" release so
+  # the ESP32 itself can fetch it over plain HTTPS for OTA (the device has
+  # no GitHub credentials — release assets are the only artifact type
+  # that's publicly downloadable without auth). Only on pushes actually
+  # landing on main; PRs build/verify but don't ship anything.
+  release:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download esp32dev artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: firmware-esp32dev
+          path: dist
+
+      - name: Publish/update the 'latest' release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest dist/firmware.bin \
+            --title "AutoGauge firmware (latest)" \
+            --notes "Built from ${{ github.sha }}. Fetched by the ESP32's OTA updater at:
+          https://github.com/${{ github.repository }}/releases/latest/download/firmware.bin"
