@@ -228,12 +228,14 @@ static void serial_console_poll() {
         line.trim();
 
         if (line.startsWith("wifi ")) {
+            // No second token means an open network (empty password) —
+            // "wifi LamaFi" is a legitimate command, not a usage error.
             int sp = line.indexOf(' ', 5);
-            if (sp < 0) {
-                Serial.println("usage: wifi <ssid> <password>");
+            String ssid = sp < 0 ? line.substring(5) : line.substring(5, sp);
+            String password = sp < 0 ? "" : line.substring(sp + 1);
+            if (ssid.isEmpty()) {
+                Serial.println("usage: wifi <ssid> [password]");
             } else {
-                String ssid = line.substring(5, sp);
-                String password = line.substring(sp + 1);
                 gSettings.setWifiCredentials(ssid.c_str(), password.c_str());
                 Serial.printf("saved WiFi credentials for \"%s\" — 'ota' to check now, or reboot\n", ssid.c_str());
             }
