@@ -13,6 +13,9 @@
 #include "gauge_settings.h"
 #include "gauge_widget.h"
 #include "theme.h"
+#include "wifi_manager.h"
+#include "ota_updater.h"
+#include "settings_ui.h"
 
 // ── pin map (see wiring table) ──────────────────────────────────────────────
 static constexpr int PIN_SCLK    = 18;
@@ -32,6 +35,8 @@ SPIClass gSpi(VSPI);
 ST7796Driver gDisplay(PIN_LCD_CS, PIN_LCD_DC, PIN_LCD_RST, gSpi);
 XPT2046Driver gTouch(PIN_TOUCH_CS, gSpi);
 GaugeSettings gSettings;
+WifiManager gWifi;
+SettingsUI gSettingsUi;
 
 // ── shared OBD state (written by the BLE task, read by the UI loop) ────────
 struct SharedGaugeData {
@@ -74,9 +79,11 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
 // ── gauge screen ─────────────────────────────────────────────────────────────
 GaugeWidget gBoostGauge, gRpmGauge, gCoolantGauge, gOilGauge;
 lv_obj_t *gConnDot = nullptr;
+lv_obj_t *gGaugeScreen = nullptr;
 
 static void build_gauge_screen() {
     lv_obj_t *scr = lv_scr_act();
+    gGaugeScreen = scr;
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x111111), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_all(scr, 6, 0);
@@ -113,6 +120,14 @@ static void build_gauge_screen() {
     lv_obj_set_style_bg_color(gConnDot, theme::danger(), 0);
     lv_obj_set_style_bg_opa(gConnDot, LV_OPA_COVER, 0);
     lv_obj_align(gConnDot, LV_ALIGN_TOP_RIGHT, -4, 4);
+
+    // Long-press bottom-right corner -> Settings, same gesture as the Pi build.
+    lv_obj_t *corner = lv_obj_create(scr);
+    lv_obj_remove_style_all(corner);
+    lv_obj_add_flag(corner, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_size(corner, 80, 60);
+    lv_obj_align(corner, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_add_event_cb(corner, SettingsUI::openFromGauge, LV_EVENT_LONG_PRESSED, &gSettingsUi);
 }
 
 static void update_gauge_screen() {
@@ -178,6 +193,29 @@ static void obd_task(void *) {
     }
 }
 
+// Runs once at boot, before BLE/display init, so the whole check happens
+// in a clean WiFi-only window rather than fighting the OBD BLE link for
+// radio time. Skips instantly if WiFi was never configured; otherwise
+// gives it a short, bounded timeout so a missing hotspot (e.g. phone not
+// tethered yet) doesn't meaningfully delay the gauges coming up.
+static void try_auto_ota() {
+    std::string ssid = gSettings.wifiSsid();
+    if (ssid.empty()) return;
+
+    Serial.println("checking for firmware update...");
+    gWifi.begin();
+    if (!gWifi.connect(ssid.c_str(), gSettings.wifiPassword().c_str(), /*timeout_ms=*/8000)) {
+        Serial.println("update check: WiFi unreachable, continuing boot");
+        gWifi.end();
+        return;
+    }
+    String result = ota_updater::checkAndUpdate(gSettings);
+    // Only reached when there's nothing to flash — success reboots from
+    // inside checkAndUpdate().
+    Serial.printf("update check: %s\n", result.c_str());
+    gWifi.end();
+}
+
 // ── setup / loop ─────────────────────────────────────────────────────────────
 void setup() {
     Serial.begin(115200);
@@ -186,6 +224,8 @@ void setup() {
     gSettings.load();
     gTouch.setCalibration(gSettings.touchXMin(), gSettings.touchXMax(),
                            gSettings.touchYMin(), gSettings.touchYMax());
+
+    try_auto_ota();
 
     gSpi.begin(PIN_SCLK, PIN_MISO, PIN_MOSI, -1);
     gDisplay.begin();
@@ -215,11 +255,15 @@ void setup() {
 
     build_gauge_screen();
 
+    gSettingsUi.init(&gSettings, &gWifi);
+    gSettingsUi.setHomeScreen(gGaugeScreen);
+
     xTaskCreatePinnedToCore(obd_task, "obd_task", 8192, nullptr, 1, nullptr, 0);
 }
 
 void loop() {
     lv_timer_handler();
     update_gauge_screen();
+    gSettingsUi.poll();
     delay(16);  // ~60fps UI refresh; BLE polling runs independently on core 0
 }

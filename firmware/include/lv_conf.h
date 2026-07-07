@@ -29,11 +29,14 @@
 #define LV_USE_BAR 1
 #define LV_USE_BUTTON 1
 #define LV_USE_BUTTONMATRIX 1
+#define LV_USE_KEYBOARD 1
 #define LV_USE_LABEL 1
 #define LV_LABEL_TEXT_SELECTION 0
 #define LV_USE_LINE 1
+#define LV_USE_LIST 1
 #define LV_USE_IMAGE 1
 #define LV_USE_SCALE 1
+#define LV_USE_SPINNER 1
 #define LV_USE_SWITCH 1
 #define LV_USE_TEXTAREA 1
 #define LV_USE_TABLE 1

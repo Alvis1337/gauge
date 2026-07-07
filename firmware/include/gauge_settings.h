@@ -15,6 +15,20 @@ public:
     std::string obdBtName() { return _prefs.getString("obd_bt_name", "").c_str(); }
     void setObdBtName(const std::string &v) { _prefs.putString("obd_bt_name", v.c_str()); }
 
+    std::string wifiSsid() { return _prefs.getString("wifi_ssid", "").c_str(); }
+    std::string wifiPassword() { return _prefs.getString("wifi_pass", "").c_str(); }
+    void setWifiCredentials(const std::string &ssid, const std::string &password) {
+        _prefs.putString("wifi_ssid", ssid.c_str());
+        _prefs.putString("wifi_pass", password.c_str());
+    }
+
+    // The GitHub release asset's ETag we last successfully flashed — lets
+    // the OTA updater skip the download+flash+reboot cycle when nothing
+    // actually changed, instead of doing it on every single boot just
+    // because WiFi happened to be in range.
+    std::string lastOtaEtag() { return _prefs.getString("ota_etag", "").c_str(); }
+    void setLastOtaEtag(const std::string &v) { _prefs.putString("ota_etag", v.c_str()); }
+
     // Touch calibration — defaults measured from the same physical panel
     // as the Pi build (see touch.py's _DEFAULT_* constants).
     int touchXMin() { return _prefs.getInt("touch_x_min", 350); }
