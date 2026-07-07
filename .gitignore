@@ -8,3 +8,11 @@ autogauge.lock
 .venv-test/
 .pytest_cache/
 elm.log
+
+# local runtime state — WiFi SSID, BLE address, touch calibration are
+# per-device and shouldn't be tracked (or leaked into a public repo)
+settings.json
+
+# PlatformIO build cache — regenerated from platformio.ini + lib_deps,
+# CI caches ~/.platformio instead of this
+firmware/.pio/

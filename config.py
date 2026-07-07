@@ -1,5 +1,4 @@
-OBD_HOST = "192.168.0.10"
-OBD_PORT = 35000
+OBD_BT_ADDRESS = ""  # BLE MAC address of the ELM327 adapter; set via Settings > OBD Adapter > Scan
 OBD_TIMEOUT = 3.0
 POLL_INTERVAL = 0.1  # seconds between full PID sweeps
 

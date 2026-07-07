@@ -32,7 +32,7 @@ settings.load()
 
 import config
 import netdiag
-import obd_discovery
+import bt_discovery
 from display import ST7796
 from obd import GaugeData, ObdClient
 from renderer import GaugeRenderer
@@ -69,23 +69,22 @@ _DISCOVERY_AFTER_FAILURES = 3   # consecutive failed *connect* attempts before t
 
 
 def _obd_thread(client: ObdClient, data_holder: list, stop_evt: threading.Event,
-                host_holder: list, force_reconnect_evt: threading.Event):
+                address_holder: list, force_reconnect_evt: threading.Event):
     retry_delay = 2.0
     consecutive_failures = 0   # only counts failed connect() attempts, not mid-session drops
     while not stop_evt.is_set():
-        host = settings.get("obd_host")
-        port = settings.get("obd_port")
-        host_holder[0] = host
+        address = settings.get("obd_bt_address")
+        address_holder[0] = address
         force_reconnect_evt.clear()
 
         try:
-            client.connect(host, port)
+            client.connect(address)
         except Exception:
-            log.exception("OBD connect failed (host=%s port=%s)", host, port)
-            # Enough evidence to tell "wrong network / adapter unreachable"
-            # apart from "reachable but the ELM327 handshake didn't
-            # negotiate" from the session log alone, after the fact.
-            log.warning("network diagnostics: %s", netdiag.snapshot(host))
+            log.exception("OBD connect failed (address=%s)", address)
+            # Enough evidence to tell "adapter off/out of range" apart
+            # from "found it but the ELM327 handshake didn't negotiate"
+            # from the session log alone, after the fact.
+            log.warning("network diagnostics: %s", netdiag.snapshot(address))
             client.disconnect()
             consecutive_failures += 1
         else:
@@ -94,8 +93,8 @@ def _obd_thread(client: ObdClient, data_holder: list, stop_evt: threading.Event,
             try:
                 while not stop_evt.is_set() and client.connected:
                     # Reconnect if settings changed
-                    if settings.get("obd_host") != host or settings.get("obd_port") != port:
-                        log.info("OBD host/port changed in settings, reconnecting")
+                    if settings.get("obd_bt_address") != address:
+                        log.info("OBD address changed in settings, reconnecting")
                         break
                     if force_reconnect_evt.is_set():
                         log.info("manual reconnect requested, forcing fresh connection")
@@ -104,25 +103,23 @@ def _obd_thread(client: ObdClient, data_holder: list, stop_evt: threading.Event,
                     data_holder[0] = client.poll()
                     time.sleep(config.POLL_INTERVAL)
             except Exception:
-                log.exception("OBD polling error (host=%s port=%s)", host, port)
+                log.exception("OBD polling error (address=%s)", address)
                 client.disconnect()
 
         if stop_evt.is_set():
             break
 
-        # The configured host is genuinely unreachable (not just a blip
-        # mid-session) — see if it moved to a different IP/port before
+        # The configured address is genuinely unreachable (not just a blip
+        # mid-session) — see if the adapter shows up somewhere else before
         # burning through the rest of the backoff schedule.
         if consecutive_failures >= _DISCOVERY_AFTER_FAILURES:
-            log.info("OBD adapter at %s:%s unreachable after %d attempts, trying auto-discovery",
-                      host, port, consecutive_failures)
-            found = obd_discovery.discover()
-            if found and found != (host, port):
-                new_host, new_port = found
-                log.info("auto-discovery found adapter at %s:%s, saving as new default",
-                          new_host, new_port)
-                settings.set("obd_host", new_host)
-                settings.set("obd_port", new_port)
+            log.info("OBD adapter at %s unreachable after %d attempts, trying auto-discovery",
+                      address, consecutive_failures)
+            found = bt_discovery.discover()
+            if found and found != address:
+                log.info("auto-discovery found adapter at %s, saving as new default", found)
+                settings.set("obd_bt_address", found)
+                settings.set("obd_bt_name", "")
                 retry_delay = 2.0
             consecutive_failures = 0
 
@@ -166,10 +163,10 @@ def main() -> bool:
     touch    = TouchController()
     client   = ObdClient()
     data_ref = [GaugeData()]
-    host_ref = [""]
+    address_ref = [""]
 
     threading.Thread(target=_obd_thread,
-                     args=(client, data_ref, stop_evt, host_ref, force_reconnect_evt),
+                     args=(client, data_ref, stop_evt, address_ref, force_reconnect_evt),
                      daemon=True).start()
 
     # Screen stack

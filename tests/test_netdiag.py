@@ -1,6 +1,7 @@
 """
-Unit tests for netdiag.py — all subprocess calls are mocked so this runs
-fast and deterministically without touching the real network.
+Unit tests for netdiag.py — all subprocess/BLE scan calls are mocked so
+this runs fast and deterministically without touching real Bluetooth
+hardware.
 """
 import os
 import subprocess
@@ -11,59 +12,59 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import netdiag
 
 
-def test_current_wifi_returns_the_active_line(monkeypatch):
+def test_adapter_powered_returns_the_powered_line(monkeypatch):
     def fake_run(cmd, **kwargs):
         class R:
-            stdout = "no:HomeNet:60\nyes:MHD ENET C084:75\n"
+            stdout = "Controller AA:BB:CC:11:22:33 (public)\n\tPowered: yes\n\tDiscoverable: no\n"
         return R()
     monkeypatch.setattr(subprocess, "run", fake_run)
-    assert netdiag.current_wifi() == "yes:MHD ENET C084:75"
+    assert netdiag.adapter_powered() == "Powered: yes"
 
 
-def test_current_wifi_reports_when_not_associated(monkeypatch):
-    def fake_run(cmd, **kwargs):
-        class R:
-            stdout = "no:HomeNet:60\n"
-        return R()
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    assert netdiag.current_wifi() == "<not associated to any WiFi>"
-
-
-def test_current_wifi_handles_subprocess_failure(monkeypatch):
+def test_adapter_powered_handles_subprocess_failure(monkeypatch):
     def fake_run(cmd, **kwargs):
         raise subprocess.TimeoutExpired(cmd, 5)
     monkeypatch.setattr(subprocess, "run", fake_run)
-    assert "failed" in netdiag.current_wifi()
+    assert "failed" in netdiag.adapter_powered()
 
 
-def test_ping_reports_reachable_on_zero_percent_loss(monkeypatch):
+def test_adapter_powered_handles_unrecognized_output(monkeypatch):
     def fake_run(cmd, **kwargs):
         class R:
-            stdout = (
-                "PING 192.168.4.1: 1 data bytes\n"
-                "1 packets transmitted, 1 received, 0% packet loss, time 0ms\n"
-            )
+            stdout = "No default controller available\n"
         return R()
     monkeypatch.setattr(subprocess, "run", fake_run)
-    ok, out = netdiag.ping("192.168.4.1")
-    assert ok is True
-    assert "0% packet loss" in out
+    assert "unknown" in netdiag.adapter_powered()
 
 
-def test_ping_reports_unreachable_on_full_loss(monkeypatch):
-    def fake_run(cmd, **kwargs):
-        class R:
-            stdout = "1 packets transmitted, 0 received, 100% packet loss\n"
-        return R()
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    ok, out = netdiag.ping("192.168.4.1")
-    assert ok is False
+def test_device_visible_true_when_scan_finds_it(monkeypatch):
+    def fake_run_coro(coro, timeout):
+        coro.close()
+        return object()
+    monkeypatch.setattr(netdiag, "run_coro", fake_run_coro)
+    assert netdiag.device_visible("AA:BB:CC:11:22:33") is True
 
 
-def test_snapshot_combines_wifi_and_ping_into_one_line(monkeypatch):
-    monkeypatch.setattr(netdiag, "current_wifi", lambda: "yes:MHD ENET C084:75")
-    monkeypatch.setattr(netdiag, "ping", lambda host, count=1, timeout=2.0: (False, "100% packet loss"))
-    line = netdiag.snapshot("192.168.4.1")
-    assert "MHD ENET C084" in line
-    assert "NO REPLY" in line
-    assert "192.168.4.1" in line
+def test_device_visible_false_when_scan_finds_nothing(monkeypatch):
+    def fake_run_coro(coro, timeout):
+        coro.close()
+        return None
+    monkeypatch.setattr(netdiag, "run_coro", fake_run_coro)
+    assert netdiag.device_visible("AA:BB:CC:11:22:33") is False
+
+
+def test_device_visible_false_on_scan_error(monkeypatch):
+    def raise_error(coro, timeout):
+        coro.close()
+        raise RuntimeError("adapter not powered")
+    monkeypatch.setattr(netdiag, "run_coro", raise_error)
+    assert netdiag.device_visible("AA:BB:CC:11:22:33") is False
+
+
+def test_snapshot_combines_power_state_and_visibility(monkeypatch):
+    monkeypatch.setattr(netdiag, "adapter_powered", lambda: "Powered: yes")
+    monkeypatch.setattr(netdiag, "device_visible", lambda address, timeout=5.0: False)
+    line = netdiag.snapshot("AA:BB:CC:11:22:33")
+    assert "Powered: yes" in line
+    assert "NOT SEEN" in line
+    assert "AA:BB:CC:11:22:33" in line

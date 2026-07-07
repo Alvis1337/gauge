@@ -1,58 +1,56 @@
 """
-On-demand network diagnostics, captured automatically whenever the OBD
-adapter fails to connect.
+On-demand Bluetooth diagnostics, captured automatically whenever the OBD
+adapter fails to connect over BLE.
 
 The point is to have enough evidence sitting in the session log after a
-failed test drive to tell apart "Pi never reached the adapter at the
-network layer" (wrong network, adapter not up yet, wrong IP) from "Pi
-reached it fine but the ELM327 handshake itself didn't negotiate" (a
-protocol-level problem) — without needing to have been watching live.
+failed test drive to tell apart "the Pi's BT radio is off/blocked" or "the
+adapter isn't in range/isn't powered" (nothing to connect to at all) from
+"the adapter is right there advertising but the GATT handshake itself
+didn't negotiate" (a protocol-level problem) — without needing to have
+been watching live.
 """
 import logging
 import subprocess
 
+from bleak import BleakScanner
+
+from bt_transport import run_coro
+
 log = logging.getLogger("netdiag")
 
 
-def _run(cmd: list, timeout: float) -> str:
+def adapter_powered() -> str:
+    """The Pi's own BT radio power state, as bluetoothctl sees it right now."""
     try:
-        return subprocess.run(
-            cmd, timeout=timeout, capture_output=True, text=True, check=False,
-        ).stdout.strip()
+        out = subprocess.run(
+            ["bluetoothctl", "show"], timeout=5, capture_output=True, text=True, check=False,
+        ).stdout
+        for line in out.splitlines():
+            line = line.strip()
+            if line.startswith("Powered:"):
+                return line
+        return "<Powered: unknown — bluetoothctl output unrecognized>"
     except Exception as e:
-        return f"<{cmd[0]} failed: {e!r}>"
+        return f"<bluetoothctl failed: {e!r}>"
 
 
-def current_wifi() -> str:
-    """Active SSID + signal strength, as nmcli sees it right now."""
-    out = _run(["nmcli", "-t", "-f", "active,ssid,signal", "dev", "wifi"], timeout=5)
-    if out.startswith("<"):  # _run's own failure sentinel
-        return out
-    for line in out.splitlines():
-        if line.startswith("yes:"):
-            return line
-    return "<not associated to any WiFi>"
+def device_visible(address: str, timeout: float = 5.0) -> bool:
+    """A quick targeted BLE scan for the configured adapter's address —
+    tells apart "adapter is off/out of range/not advertising" from "it's
+    right there but the GATT handshake itself didn't negotiate", the same
+    role the old WiFi-association + ping checks played for the TCP path."""
+    try:
+        device = run_coro(BleakScanner.find_device_by_address(address, timeout=timeout), timeout + 5)
+        return device is not None
+    except Exception as e:
+        log.debug("device_visible(%s) scan failed: %s: %s", address, type(e).__name__, e)
+        return False
 
 
-def ping(host: str, count: int = 1, timeout: float = 2.0) -> tuple:
-    """A reachability check independent of the OBD TCP port itself — tells
-    us whether the Pi can reach the host at the IP layer at all, which
-    rules network-layer problems in or out before blaming the adapter's
-    ELM327 protocol handling."""
-    out = _run(["ping", "-c", str(count), "-W", str(max(1, int(timeout))), host],
-               timeout=timeout + 2)
-    # A leading space matters: "100% packet loss" contains "0% packet
-    # loss" as a substring, which would otherwise misreport total loss as
-    # success.
-    reachable = " 0% packet loss" in out
-    return reachable, out
-
-
-def snapshot(host: str) -> str:
-    """One line summarizing WiFi association + host reachability, logged
-    at WARNING so it survives a session log at default verbosity."""
-    wifi = current_wifi()
-    reachable, ping_out = ping(host)
-    last_line = ping_out.splitlines()[-1] if ping_out else ""
-    return (f"wifi={wifi!r} ping({host})={'reachable' if reachable else 'NO REPLY'} "
-            f"({last_line!r})")
+def snapshot(address: str) -> str:
+    """One line summarizing BT adapter power state + whether the
+    configured device is currently advertising, logged at WARNING so it
+    survives a session log at default verbosity."""
+    power = adapter_powered()
+    visible = device_visible(address)
+    return f"{power} device({address})={'visible' if visible else 'NOT SEEN'}"

@@ -7,8 +7,8 @@ import subprocess
 import threading
 import time
 import pygame
+import bt_discovery
 import gauge_logging
-import obd_discovery
 import settings
 import ui
 from ui import W, H
@@ -211,118 +211,125 @@ class WifiPasswordScreen:
 # ── OBD config screen ─────────────────────────────────────────────────────────
 
 class ObdConfigScreen:
-    _FIELD_HOST = "host"
-    _FIELD_PORT = "port"
-    _SCAN_RECT  = (350, 46, 122, 34)
+    _BACK_RECT  = (8, 8, 70, 28)
+    _SCAN_RECT  = (W - 130, 8, 122, 28)
+    _ROW_H      = 32
+    _ROW_TOP    = 100
+    _PREV_RECT  = (8, H - 30, 90, 24)
+    _NEXT_RECT  = (W - 98, H - 30, 90, 24)
+    # BLE scans pick up everything nearby (phones, earbuds, etc.), not just
+    # OBD adapters — a flat list of them all ran off the bottom of the
+    # 320px display, so this is how many rows fit above the page controls.
+    _ROWS_PER_PAGE = (H - 36 - _ROW_TOP) // _ROW_H
 
     _STATUS_TTL = 3.0
 
     def __init__(self):
-        self._field = self._FIELD_HOST
-        self._host_buf = settings.get("obd_host")
-        self._port_buf = str(settings.get("obd_port"))
-        self._saved = False
-        self._scanning = False
+        self._address = settings.get("obd_bt_address")
+        self._name = settings.get("obd_bt_name")
+        self._devices: list[tuple[str, str]] = []
+        self._page = 0
+        self._loading = False
         self._scan_status = ""
         self._status = ""
         self._status_until = 0.0
+        self._cancelled = False
 
     def set_status(self, msg: str):
         self._status = msg
         self._status_until = time.monotonic() + self._STATUS_TTL
 
+    def cancel(self):
+        # Scan runs on a background thread; a screen switch mid-scan
+        # shouldn't let its result land on whatever screen replaced this one.
+        self._cancelled = True
+
+    @property
+    def _total_pages(self) -> int:
+        return max(1, -(-len(self._devices) // self._ROWS_PER_PAGE))  # ceil div
+
+    def _page_devices(self) -> list[tuple[str, str]]:
+        start = self._page * self._ROWS_PER_PAGE
+        return self._devices[start:start + self._ROWS_PER_PAGE]
+
+    def _row_rect(self, i: int):
+        return (10, self._ROW_TOP + i * self._ROW_H, W - 20, self._ROW_H - 4)
+
     def draw(self, surf: pygame.Surface):
         surf.fill(ui.BG)
-        ui.rect_btn(surf, "← Back", (8, 8, 70, 28), ui.PANEL, font=ui._F_SM)
-        ui.text(surf, "OBD Adapter", W // 2, 10, ui._F_LG, anchor="midtop")
-
-        # Host field
-        h_color = ui.ACCENT if self._field == self._FIELD_HOST else ui.BORDER
-        pygame.draw.rect(surf, ui.CARD, (10, 46, W // 2 - 15, 30), border_radius=4)
-        pygame.draw.rect(surf, h_color, (10, 46, W // 2 - 15, 30), width=2, border_radius=4)
-        ui.text(surf, "IP", 14, 48, ui._F_SM, ui.SUBTEXT)
-        ui.text(surf, self._host_buf, 14, 62, ui._F_SM, ui.TEXT)
-
-        # Port field
-        p_color = ui.ACCENT if self._field == self._FIELD_PORT else ui.BORDER
-        pygame.draw.rect(surf, ui.CARD, (W // 2 + 5, 46, W // 2 - 15 - 130, 30), border_radius=4)
-        pygame.draw.rect(surf, p_color, (W // 2 + 5, 46, W // 2 - 15 - 130, 30), width=2, border_radius=4)
-        ui.text(surf, "Port", W // 2 + 9, 48, ui._F_SM, ui.SUBTEXT)
-        ui.text(surf, self._port_buf, W // 2 + 9, 62, ui._F_SM, ui.TEXT)
-
-        # Auto-detect
-        ui.rect_btn(surf, "Scanning…" if self._scanning else "Auto-detect",
-                    self._SCAN_RECT, ui.ACCENT if not self._scanning else ui.BORDER,
+        ui.rect_btn(surf, "← Back", self._BACK_RECT, ui.PANEL, font=ui._F_SM)
+        ui.text(surf, "OBD Adapter (Bluetooth)", W // 2, 10, ui._F_LG, anchor="midtop")
+        ui.rect_btn(surf, "Scanning…" if self._loading else "Scan",
+                    self._SCAN_RECT, ui.BORDER if self._loading else ui.ACCENT,
                     font=ui._F_SM, radius=4)
-        if self._scan_status and not self._scanning:
-            # Right-anchored to the screen edge, not centered on the button —
-            # a result like "Found 192.168.4.1:6801" is wider than the
-            # 130px-wide button and was running off the right edge of the
-            # 480px screen when centered under it.
-            ui.text(surf, self._scan_status, W - 8,
-                    self._SCAN_RECT[1] + self._SCAN_RECT[3] + 4, ui._F_SM, ui.SUBTEXT, anchor="topright")
+
+        current = self._name or self._address or "(none set)"
+        ui.text(surf, f"Current: {current}", 12, 46, ui._F_SM, ui.SUBTEXT)
 
         if self._status and time.monotonic() < self._status_until:
-            ui.text(surf, self._status, W // 2, 84, ui._F_SM, ui.SUCCESS, anchor="midtop")
-        elif self._saved:
-            ui.text(surf, "Saved!", W // 2, 84, ui._F_SM, ui.SUCCESS, anchor="midtop")
+            ui.text(surf, self._status, W // 2, 66, ui._F_SM, ui.SUCCESS, anchor="midtop")
 
-        ui.draw_numpad(surf)
+        if self._loading:
+            ui.text(surf, "Scanning for BLE devices…", W // 2, H // 2, ui._F_MD, ui.SUBTEXT, anchor="center")
+            return
+
+        if self._scan_status:
+            ui.text(surf, self._scan_status, W // 2, 84, ui._F_SM, ui.SUBTEXT, anchor="midtop")
+
+        for i, (addr, name) in enumerate(self._page_devices()):
+            active = addr == self._address
+            label = ("✓ " if active else "  ") + f"{name} ({addr})"
+            ui.rect_btn(surf, label, self._row_rect(i),
+                        ui.ACCENT if active else ui.CARD, font=ui._F_SM, radius=4)
+
+        if self._devices:
+            ui.rect_btn(surf, "‹ Prev", self._PREV_RECT, ui.CARD, font=ui._F_SM)
+            ui.text(surf, f"{self._page + 1}/{self._total_pages}", W // 2, H - 26,
+                    ui._F_SM, ui.SUBTEXT, anchor="midtop")
+            ui.rect_btn(surf, "Next ›", self._NEXT_RECT, ui.CARD, font=ui._F_SM)
 
     def handle_touch(self, pos) -> str | None:
         if pos is None:
             return None
-        if ui.hit((8, 8, 70, 28), pos):
+        if ui.hit(self._BACK_RECT, pos):
             return "settings"
         if ui.hit(self._SCAN_RECT, pos):
             self._start_scan()
             return None
-        if ui.hit((10, 46, W // 2 - 15, 30), pos):
-            self._field = self._FIELD_HOST
+        if self._loading:
             return None
-        if ui.hit((W // 2 + 5, 46, W // 2 - 15 - 130, 30), pos):
-            self._field = self._FIELD_PORT
-            return None
-
-        k = ui.numpad_hit(pos)
-        if k is None:
-            return None
-        buf = self._host_buf if self._field == self._FIELD_HOST else self._port_buf
-        if k == "BACKSPACE":
-            buf = buf[:-1]
-        elif k == "OK":
-            settings.set("obd_host", self._host_buf)
-            settings.set("obd_port", int(self._port_buf or "0"))
-            self._saved = True
-            # Without this, a newly-saved host/port only takes effect once
-            # the OBD thread's current backoff wait expires — up to 30s if
-            # it had already backed off — which reads as "nothing happened"
-            # after typing in an IP by hand.
-            return "action:reconnect_obd"
-        else:
-            buf += k
-        if self._field == self._FIELD_HOST:
-            self._host_buf = buf
-        else:
-            self._port_buf = buf
-        self._saved = False
+        if self._devices:
+            if ui.hit(self._PREV_RECT, pos):
+                self._page = max(0, self._page - 1)
+                return None
+            if ui.hit(self._NEXT_RECT, pos):
+                self._page = min(self._total_pages - 1, self._page + 1)
+                return None
+        for i, (addr, name) in enumerate(self._page_devices()):
+            if ui.hit(self._row_rect(i), pos):
+                settings.set("obd_bt_address", addr)
+                settings.set("obd_bt_name", name)
+                self._address, self._name = addr, name
+                # Without this, a newly-picked adapter only takes effect
+                # once the OBD thread's current backoff wait expires — up
+                # to 30s if it had already backed off — which reads as
+                # "nothing happened" after picking a device from the list.
+                return "action:reconnect_obd"
         return None
 
     def _start_scan(self):
-        if self._scanning:
+        if self._loading:
             return
-        self._scanning = True
+        self._loading = True
         self._scan_status = ""
 
         def _work():
-            found = obd_discovery.discover()
-            if found:
-                self._host_buf, self._port_buf = found[0], str(found[1])
-                self._scan_status = f"Found {found[0]}:{found[1]}"
-                self._saved = False
-            else:
-                self._scan_status = "No adapter found"
-            self._scanning = False
+            devices = bt_discovery.scan()
+            if not self._cancelled:
+                self._devices = devices
+                self._page = 0
+                self._scan_status = "" if devices else "No BLE devices found"
+                self._loading = False
 
         threading.Thread(target=_work, daemon=True).start()
 

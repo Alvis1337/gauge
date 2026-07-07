@@ -1,6 +1,5 @@
 import logging
 import re
-import socket
 import threading
 import time
 from dataclasses import dataclass, field
@@ -10,6 +9,7 @@ from parsers import (
     parse_rpm, parse_kpa, parse_coolant,
     parse_throttle, parse_oil_temp_4402, parse_ethanol,
 )
+from bt_transport import BleTransport
 import config
 
 log = logging.getLogger("obd")
@@ -54,59 +54,58 @@ class GaugeData:
 
 class ObdClient:
     def __init__(self):
-        self._sock: Optional[socket.socket] = None
+        self._transport: Optional[BleTransport] = None
         self._lock = threading.Lock()
         self.connected = False
 
-    def connect(self, host: str = None, port: int = None):
-        host = host or config.OBD_HOST
-        port = port or config.OBD_PORT
-        log.info("dialing %s:%s (timeout=%.1fs)", host, port, config.OBD_TIMEOUT)
+    def connect(self, address: str = None):
+        address = address or config.OBD_BT_ADDRESS
+        log.info("connecting to %s (timeout=%.1fs)", address, config.OBD_TIMEOUT)
         t0 = time.monotonic()
+        transport = BleTransport()
         try:
-            self._sock = socket.create_connection(
-                (host, port),
-                timeout=config.OBD_TIMEOUT,
-            )
+            transport.connect(address, timeout=config.OBD_TIMEOUT)
         except Exception as e:
-            # Distinguishing "refused instantly" from "timed out waiting the
+            # Distinguishing "failed instantly" from "timed out waiting the
             # full config.OBD_TIMEOUT" from the elapsed time alone is often
-            # enough to tell a wrong IP/port apart from a genuinely
-            # unreachable network without anything else to go on.
-            log.warning("TCP connect to %s:%s failed after %.1fs: %s: %s",
-                        host, port, time.monotonic() - t0, type(e).__name__, e)
+            # enough to tell "adapter out of range/off" apart from "found
+            # it but the GATT handshake itself didn't negotiate" without
+            # anything else to go on.
+            log.warning("BLE connect to %s failed after %.1fs: %s: %s",
+                        address, time.monotonic() - t0, type(e).__name__, e)
             raise
-        log.debug("TCP connect to %s:%s took %.0fms", host, port, (time.monotonic() - t0) * 1000)
-        self._sock.settimeout(config.OBD_TIMEOUT)
+        log.debug("BLE connect to %s took %.0fms", address, (time.monotonic() - t0) * 1000)
+        self._transport = transport
         if not self._init_elm():
             # A timed-out init command leaves whatever the adapter sends
-            # late still sitting unread in the socket buffer — every read
+            # late still sitting unread in the receive queue — every read
             # after that is misaligned with what it's actually replying to
-            # (we've seen this: ATZ/ATE0 time out, then ATL0/ATS0/ATSP0/ATH1
-            # all come back as empty strings — stale bytes, not real acks).
-            # Don't limp forward on a desynced stream; close and let the
-            # caller retry with a genuinely fresh connection instead.
-            self._sock.close()
-            self._sock = None
+            # (we've seen this over TCP: ATZ/ATE0 time out, then
+            # ATL0/ATS0/ATSP0/ATH1 all come back as empty strings — stale
+            # bytes, not real acks). Don't limp forward on a desynced
+            # stream; close and let the caller retry with a genuinely
+            # fresh connection instead.
+            self._transport.close()
+            self._transport = None
             raise ConnectionError(
-                f"ELM327 init failed on {host}:{port} — see debug log for which AT command got no response"
+                f"ELM327 init failed on {address} — see debug log for which AT command got no response"
             )
         self.connected = True
-        log.info("connected to %s:%s", host, port)
+        log.info("connected to %s", address)
 
     def disconnect(self):
         # Holds the same lock _send_raw() uses so a disconnect() called from
         # another thread (e.g. a UI "reconnect" button) can't null out
-        # self._sock while _send_raw() is mid-flight using it — that raced
-        # an AttributeError before this fix.
+        # self._transport while _send_raw() is mid-flight using it — that
+        # raced an AttributeError before this fix.
         with self._lock:
             self.connected = False
             try:
-                if self._sock:
-                    self._sock.close()
+                if self._transport:
+                    self._transport.close()
             except Exception:
                 pass
-            self._sock = None
+            self._transport = None
 
     def _init_elm(self) -> bool:
         # ATZ triggers a full ELM327 chip reset, which needs real recovery
@@ -170,17 +169,16 @@ class ObdClient:
     def _send_raw(self, cmd: str, timeout: float = None) -> Optional[str]:
         with self._lock:
             # Captured once under the lock rather than re-read via
-            # self._sock throughout — disconnect() (also lock-held) can't
-            # swap it to None out from under an in-progress call anymore,
-            # but a local reference keeps this method correct even if that
-            # invariant ever changes.
-            sock = self._sock
-            if sock is None:
+            # self._transport throughout — disconnect() (also lock-held)
+            # can't swap it to None out from under an in-progress call
+            # anymore, but a local reference keeps this method correct even
+            # if that invariant ever changes.
+            transport = self._transport
+            if transport is None:
                 return None
+            eff_timeout = timeout if timeout is not None else config.OBD_TIMEOUT
             buf = b""
             try:
-                if timeout is not None:
-                    sock.settimeout(timeout)
                 payload = (cmd + "\r").encode()
                 # Raw bytes (not the decoded/stripped string) so anything a
                 # nonstandard adapter prepends or sends non-ASCII — framing
@@ -188,25 +186,15 @@ class ObdClient:
                 # being silently eaten by decode(errors="ignore").
                 log.debug("PID %s: TX %r", cmd, payload)
                 t0 = time.monotonic()
-                sock.sendall(payload)
-                while b">" not in buf:
-                    chunk = sock.recv(256)
-                    if not chunk:
-                        break
-                    buf += chunk
+                transport.send(payload)
+                buf = transport.recv_until(b">", eff_timeout)
                 log.debug("PID %s: RX %r (%.0fms)", cmd, buf, (time.monotonic() - t0) * 1000)
                 return buf.decode(errors="ignore").strip()
             except Exception as e:
-                log.debug("PID %s: socket error: %r (partial RX before error: %r)", cmd, e, buf)
-                # Without this, a dropped connection (adapter reset, WiFi
-                # blip) never gets noticed: the poll loop keeps hammering
-                # the dead socket at full speed forever instead of backing
-                # off and reconnecting.
+                log.debug("PID %s: BLE error: %r (partial RX before error: %r)", cmd, e, buf)
+                # Without this, a dropped connection (adapter reset, out of
+                # BLE range) never gets noticed: the poll loop keeps
+                # hammering the dead transport at full speed forever
+                # instead of backing off and reconnecting.
                 self.connected = False
                 return None
-            finally:
-                if timeout is not None:
-                    try:
-                        sock.settimeout(config.OBD_TIMEOUT)
-                    except Exception:
-                        pass

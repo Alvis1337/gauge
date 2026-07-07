@@ -1,0 +1,53 @@
+name: firmware
+
+on:
+  push:
+    paths:
+      - "firmware/**"
+      - ".github/workflows/firmware.yml"
+  pull_request:
+    paths:
+      - "firmware/**"
+      - ".github/workflows/firmware.yml"
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        env: [esp32dev, diag]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Keyed on platformio.ini so a dependency/toolchain change busts the
+      # cache, but the ESP32 toolchain + NimBLE (the slow part on real
+      # hardware) don't get re-fetched on every run otherwise.
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: platformio-${{ matrix.env }}-${{ hashFiles('firmware/platformio.ini') }}
+          restore-keys: |
+            platformio-${{ matrix.env }}-
+
+      - name: Install PlatformIO
+        run: pip install -U platformio
+
+      - name: Build (${{ matrix.env }})
+        working-directory: firmware
+        run: pio run -e ${{ matrix.env }}
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.env }}
+          path: |
+            firmware/.pio/build/${{ matrix.env }}/firmware.bin
+            firmware/.pio/build/${{ matrix.env }}/bootloader.bin
+            firmware/.pio/build/${{ matrix.env }}/partitions.bin
+          if-no-files-found: error

@@ -5,8 +5,8 @@ import os
 _PATH = os.path.join(os.path.dirname(__file__), "settings.json")
 
 _DEFAULTS = {
-    "obd_host": "192.168.0.10",
-    "obd_port": 35000,
+    "obd_bt_address": "",
+    "obd_bt_name": "",
     # touch calibration
     "touch_x_min": 200,
     "touch_x_max": 3900,
