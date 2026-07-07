@@ -216,6 +216,75 @@ static void try_auto_ota() {
     gWifi.end();
 }
 
+// Non-blocking USB-serial command console — lets WiFi/OTA/touch be tested
+// and debugged without a working touchscreen (added while chasing the
+// touch wiring issue, but useful for headless bring-up generally).
+// Commands: "wifi <ssid> <password>", "ota", "reboot", "touch", "status".
+static void serial_console_poll() {
+    static String line;
+    while (Serial.available()) {
+        char c = (char)Serial.read();
+        if (c != '\n') { line += c; continue; }
+        line.trim();
+
+        if (line.startsWith("wifi ")) {
+            int sp = line.indexOf(' ', 5);
+            if (sp < 0) {
+                Serial.println("usage: wifi <ssid> <password>");
+            } else {
+                String ssid = line.substring(5, sp);
+                String password = line.substring(sp + 1);
+                gSettings.setWifiCredentials(ssid.c_str(), password.c_str());
+                Serial.printf("saved WiFi credentials for \"%s\" — 'ota' to check now, or reboot\n", ssid.c_str());
+            }
+        } else if (line == "ota") {
+            xTaskCreate([](void *) {
+                std::string ssid = gSettings.wifiSsid();
+                if (ssid.empty()) {
+                    Serial.println("no WiFi configured — use: wifi <ssid> <password>");
+                    vTaskDelete(nullptr);
+                    return;
+                }
+                Serial.println("connecting to WiFi...");
+                gWifi.begin();
+                if (!gWifi.connect(ssid.c_str(), gSettings.wifiPassword().c_str())) {
+                    Serial.println("could not connect to WiFi");
+                    gWifi.end();
+                    vTaskDelete(nullptr);
+                    return;
+                }
+                Serial.println("downloading update...");
+                String result = ota_updater::checkAndUpdate(gSettings);
+                Serial.printf("ota result: %s\n", result.c_str());
+                gWifi.end();
+                vTaskDelete(nullptr);
+            }, "ota_cmd", 8192, nullptr, 1, nullptr);
+        } else if (line == "reboot") {
+            ESP.restart();
+        } else if (line == "touch") {
+            Serial.println("raw touch for 5s (tap the panel now)...");
+            uint32_t until = millis() + 5000;
+            while (millis() < until) {
+                int rx, ry;
+                gTouch.readRaw(&rx, &ry);
+                Serial.printf("  raw x=%d y=%d\n", rx, ry);
+                delay(200);
+            }
+        } else if (line == "status") {
+            Serial.printf("free heap: %u bytes\n", ESP.getFreeHeap());
+            Serial.printf("wifi ssid: \"%s\"\n", gSettings.wifiSsid().c_str());
+            Serial.printf("obd address: \"%s\"\n", gSettings.obdBtAddress().c_str());
+            portENTER_CRITICAL(&gShared.mux);
+            bool connected = gShared.connected;
+            portEXIT_CRITICAL(&gShared.mux);
+            Serial.printf("obd connected: %s\n", connected ? "yes" : "no");
+        } else if (!line.isEmpty()) {
+            Serial.println("commands: wifi <ssid> <password> | ota | reboot | touch | status");
+        }
+        line = "";
+    }
+}
+
 // ── setup / loop ─────────────────────────────────────────────────────────────
 void setup() {
     Serial.begin(115200);
@@ -265,5 +334,6 @@ void loop() {
     lv_timer_handler();
     update_gauge_screen();
     gSettingsUi.poll();
+    serial_console_poll();
     delay(16);  // ~60fps UI refresh; BLE polling runs independently on core 0
 }
