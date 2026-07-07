@@ -116,6 +116,7 @@ static void set_boot_status(const char *text) {
 static void build_gauge_screen() {
     lv_obj_t *scr = lv_scr_act();
     lv_obj_clean(scr);  // drop the boot splash's title/status labels
+    gBootLabel = nullptr;  // that label object is now deleted — don't leave a dangling pointer
     gGaugeScreen = scr;
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x111111), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
