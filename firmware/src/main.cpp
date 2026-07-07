@@ -81,8 +81,41 @@ GaugeWidget gBoostGauge, gRpmGauge, gCoolantGauge, gOilGauge;
 lv_obj_t *gConnDot = nullptr;
 lv_obj_t *gGaugeScreen = nullptr;
 
+// ── boot splash ──────────────────────────────────────────────────────────────
+// try_auto_ota() runs synchronously in setup(), before build_gauge_screen()
+// exists — without this, the panel just sits there showing nothing (or
+// whatever garbage was left in the display's RAM) for however long the WiFi
+// connect timeout + download takes. gBootLabel gets updated at each stage so
+// the user knows the board hasn't hung.
+lv_obj_t *gBootLabel = nullptr;
+
+static void build_boot_screen() {
+    lv_obj_t *scr = lv_scr_act();
+    lv_obj_set_style_bg_color(scr, lv_color_hex(0x111111), 0);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+
+    lv_obj_t *title = lv_label_create(scr);
+    lv_label_set_text(title, "AutoGauge");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+    lv_obj_align(title, LV_ALIGN_CENTER, 0, -20);
+
+    gBootLabel = lv_label_create(scr);
+    lv_label_set_text(gBootLabel, "Starting...");
+    lv_obj_set_style_text_color(gBootLabel, theme::subtext(), 0);
+    lv_obj_align(gBootLabel, LV_ALIGN_CENTER, 0, 20);
+}
+
+// Nothing else calls lv_timer_handler() while try_auto_ota() blocks in
+// setup(), so each status change has to flush itself to actually show up.
+static void set_boot_status(const char *text) {
+    if (!gBootLabel) return;
+    lv_label_set_text(gBootLabel, text);
+    lv_timer_handler();
+}
+
 static void build_gauge_screen() {
     lv_obj_t *scr = lv_scr_act();
+    lv_obj_clean(scr);  // drop the boot splash's title/status labels
     gGaugeScreen = scr;
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x111111), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
@@ -193,27 +226,37 @@ static void obd_task(void *) {
     }
 }
 
-// Runs once at boot, before BLE/display init, so the whole check happens
-// in a clean WiFi-only window rather than fighting the OBD BLE link for
-// radio time. Skips instantly if WiFi was never configured; otherwise
-// gives it a short, bounded timeout so a missing hotspot (e.g. phone not
-// tethered yet) doesn't meaningfully delay the gauges coming up.
+// Runs once at boot, before BLE init, so the whole check happens in a clean
+// WiFi-only window rather than fighting the OBD BLE link for radio time
+// (display/LVGL are already up by this point, purely so the boot splash
+// can show progress instead of a blank panel). Skips instantly if WiFi was
+// never configured; otherwise gives it a short, bounded timeout so a
+// missing hotspot (e.g. phone not tethered yet) doesn't meaningfully delay
+// the gauges coming up.
 static void try_auto_ota() {
     std::string ssid = gSettings.wifiSsid();
     if (ssid.empty()) return;
 
+    set_boot_status("Checking for update...");
     Serial.println("checking for firmware update...");
     gWifi.begin();
     if (!gWifi.connect(ssid.c_str(), gSettings.wifiPassword().c_str(), /*timeout_ms=*/8000)) {
         Serial.println("update check: WiFi unreachable, continuing boot");
+        set_boot_status("Update check: WiFi unreachable");
         gWifi.end();
+        delay(1000);
         return;
     }
+    set_boot_status("Downloading update...");
     String result = ota_updater::checkAndUpdate(gSettings);
     // Only reached when there's nothing to flash — success reboots from
     // inside checkAndUpdate().
     Serial.printf("update check: %s\n", result.c_str());
     gWifi.end();
+    if (result != "up to date") {
+        set_boot_status(("Update check failed: " + result).c_str());
+        delay(1500);  // let the message actually be readable before gauges take over
+    }
 }
 
 // Non-blocking USB-serial command console — lets WiFi/OTA/touch be tested
@@ -296,13 +339,9 @@ void setup() {
     gTouch.setCalibration(gSettings.touchXMin(), gSettings.touchXMax(),
                            gSettings.touchYMin(), gSettings.touchYMax());
 
-    try_auto_ota();
-
     gSpi.begin(PIN_SCLK, PIN_MISO, PIN_MOSI, -1);
     gDisplay.begin();
     gTouch.begin();
-
-    NimBLEDevice::init("AutoGauge");
 
     lv_init();
     lv_tick_set_cb([]() -> uint32_t { return millis(); });
@@ -319,6 +358,16 @@ void setup() {
     lv_theme_t *theme = lv_theme_default_init(disp, lv_color_hex(0x2196f3), lv_color_hex(0xff5252),
                                                /*dark=*/true, LV_FONT_DEFAULT);
     lv_display_set_theme(disp, theme);
+
+    // Display/LVGL are up now so try_auto_ota() (still called before BLE
+    // init, further down) has somewhere to show progress instead of the
+    // panel just sitting blank for however long WiFi connect + download take.
+    build_boot_screen();
+    lv_timer_handler();
+
+    try_auto_ota();
+
+    NimBLEDevice::init("AutoGauge");
 
     lv_indev_t *indev = lv_indev_create();
     lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
