@@ -137,3 +137,22 @@ def test_read_raw_returns_median_filtered_axes_for_calibration_screen(make_touch
     }
     tc, _ = make_touch(queues)
     assert tc.read_raw() == (30, 300)
+
+
+def test_read_returns_none_instead_of_crashing_on_zero_calibration_range(make_touch):
+    # A wiped/corrupt settings.json (or a botched calibration) can leave
+    # min == max on an axis — every touch must be silently dropped rather
+    # than raising a ZeroDivisionError.
+    n = touch.PRESSURE_SAMPLES
+    calibration = {
+        "touch_x_min": 350, "touch_x_max": 350,
+        "touch_y_min": 350, "touch_y_max": 3900,
+    }
+    queues = {
+        touch.CMD_Z1: [4095] * n,
+        touch.CMD_Z2: [0] * n,
+        touch.CMD_X: [0] + [2075] * 5,
+        touch.CMD_Y: [0] + [2125] * 5,
+    }
+    tc, _ = make_touch(queues, calibration=calibration)
+    assert tc.read() is None

@@ -11,15 +11,18 @@ to make taps land on the wrong on-screen button — every serious XPT2046
 driver oversamples position (discarding the first read after switching
 the ADC input mux, since it hasn't settled yet) and takes the median of
 several more. Press detection likewise requires multiple consecutive
-above-threshold pressure samples, spaced a few ms apart, before accepting
+above-threshold pressure samples, spaced ~20ms apart, before accepting
 a touch as real — the same approach touch_debug.py already proved
-necessary (5 consecutive samples) when it was used to hand-calibrate this
-panel, but which this driver never adopted.
+necessary (5 consecutive samples, 20ms apart) when it was used to
+hand-calibrate this panel.
 """
+import logging
 import time
 import spidev
 import settings
 import config
+
+log = logging.getLogger("touch")
 
 CMD_X  = 0xD0
 CMD_Y  = 0x90
@@ -27,8 +30,8 @@ CMD_Z1 = 0xB0
 CMD_Z2 = 0xC0
 
 PRESSURE_THRESHOLD  = 500
-PRESSURE_SAMPLES    = 4       # consecutive above-threshold reads required to accept a press
-PRESSURE_SAMPLE_GAP = 0.003   # seconds between pressure samples
+PRESSURE_SAMPLES    = 5       # consecutive above-threshold reads required to accept a press
+PRESSURE_SAMPLE_GAP = 0.02    # seconds between pressure samples (matches touch_debug.py)
 POSITION_SAMPLES    = 5       # medianed reads per axis (plus one discarded mux-settle read)
 
 DISPLAY_W = config.DISPLAY_WIDTH
@@ -47,6 +50,8 @@ class TouchController:
         self._spi.open(1, 0)
         self._spi.max_speed_hz = 50_000
         self._spi.mode = 0
+        self._warned_bad_calibration = False
+        log.info("XPT2046 opened on /dev/spidev1.0 (%d Hz)", self._spi.max_speed_hz)
 
     def _read_adc(self, cmd: int) -> int:
         rx = self._spi.xfer2([cmd, 0, 0])
@@ -83,6 +88,11 @@ class TouchController:
         x_range = x_max - x_min
         y_range = y_max - y_min
         if x_range == 0 or y_range == 0:
+            if not self._warned_bad_calibration:
+                log.warning("touch calibration range is zero (x_min=%s x_max=%s "
+                            "y_min=%s y_max=%s) — every touch will be ignored "
+                            "until recalibrated", x_min, x_max, y_min, y_max)
+                self._warned_bad_calibration = True
             return None
 
         # raw_Y → pygame X (horizontal),  raw_X → pygame Y (vertical)
