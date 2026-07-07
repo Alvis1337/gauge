@@ -33,6 +33,7 @@ settings.load()
 import config
 import netdiag
 import bt_discovery
+import updater
 from display import ST7796
 from obd import GaugeData, ObdClient
 from renderer import GaugeRenderer
@@ -79,6 +80,31 @@ def _status_thread(status_holder: list, stop_evt: threading.Event):
             "bt": netdiag.bt_powered(),
         }
         stop_evt.wait(_STATUS_POLL_INTERVAL_S)
+
+
+_UPDATE_RESULT_DISPLAY_S = 3.0   # how long "up_to_date"/"error" stays on screen before clearing
+
+
+def _update_thread(status_holder: list, trigger_evt: threading.Event,
+                   stop_evt: threading.Event, restart_requested: threading.Event):
+    """Idle until the Settings screen's "Check for Update" button sets
+    trigger_evt, then runs one check_and_apply() cycle. A pulled update
+    triggers the same restart path as the manual "Restart App" action so
+    the new code actually takes effect."""
+    status_holder[0] = "idle"
+    while not stop_evt.is_set():
+        if trigger_evt.wait(timeout=0.5):
+            trigger_evt.clear()
+            try:
+                if updater.check_and_apply(status_holder):
+                    restart_requested.set()
+                    stop_evt.set()
+                    break
+            except Exception:
+                log.exception("update check failed")
+                status_holder[0] = "error"
+            stop_evt.wait(_UPDATE_RESULT_DISPLAY_S)
+            status_holder[0] = "idle"
 
 
 def _obd_thread(client: ObdClient, data_holder: list, stop_evt: threading.Event,
@@ -157,6 +183,7 @@ def main() -> bool:
     stop_evt = threading.Event()
     force_reconnect_evt = threading.Event()
     restart_requested = threading.Event()
+    update_check_evt = threading.Event()
 
     def _handle_term(signum, frame):
         # pygame/SDL installs its own SIGTERM/SIGINT handler that turns the
@@ -178,12 +205,16 @@ def main() -> bool:
     data_ref = [GaugeData()]
     address_ref = [""]
     status_ref = [{"wifi": False, "bt": False}]
+    update_status_ref = ["idle"]
 
     threading.Thread(target=_obd_thread,
                      args=(client, data_ref, stop_evt, address_ref, force_reconnect_evt),
                      daemon=True).start()
     threading.Thread(target=_status_thread,
                      args=(status_ref, stop_evt),
+                     daemon=True).start()
+    threading.Thread(target=_update_thread,
+                     args=(update_status_ref, update_check_evt, stop_evt, restart_requested),
                      daemon=True).start()
 
     # Screen stack
@@ -217,6 +248,10 @@ def main() -> bool:
             restart_requested.set()
             stop_evt.set()
             return "Restarting..."
+        if action == "check_update":
+            log.info("manual update check requested from settings UI")
+            update_check_evt.set()
+            return "Checking for updates..."
         log.warning("unknown settings action: %r", action)
         return ""
 
@@ -243,7 +278,8 @@ def main() -> bool:
                     corner_down = None
 
                 renderer.update(data_ref[0], client.connected,
-                                status_ref[0]["wifi"], status_ref[0]["bt"])
+                                status_ref[0]["wifi"], status_ref[0]["bt"],
+                                update_status_ref[0])
                 renderer.draw()
                 # Settings hint dot in corner (below the status bar, out of its way)
                 pygame.draw.circle(screen, (60, 60, 60), (10, 50), 5)

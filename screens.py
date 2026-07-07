@@ -535,9 +535,9 @@ class SettingsScreen:
         ("Logs",             "logs"),
     ]
     _BACK_LABEL, _BACK_KEY = "Back to Gauges", "gauges"
-    _ROW_H       = 38
-    _ROW_GAP     = 4
-    _TOP         = 48
+    _ROW_H       = 34
+    _ROW_GAP     = 3
+    _TOP         = 44
     _STATUS_TTL  = 3.0
 
     def __init__(self):
@@ -555,14 +555,20 @@ class SettingsScreen:
     def _action_row_y(self) -> int:
         return self._TOP + len(self._NAV_ITEMS) * (self._ROW_H + self._ROW_GAP)
 
+    def _update_rect(self):
+        return (20, self._action_row_y(), W - 40, self._ROW_H)
+
+    def _second_row_y(self) -> int:
+        return self._action_row_y() + self._ROW_H + self._ROW_GAP
+
     def _reconnect_rect(self):
-        return (20, self._action_row_y(), W // 2 - 30, self._ROW_H)
+        return (20, self._second_row_y(), W // 2 - 30, self._ROW_H)
 
     def _restart_rect(self):
-        return (W // 2 + 10, self._action_row_y(), W // 2 - 30, self._ROW_H)
+        return (W // 2 + 10, self._second_row_y(), W // 2 - 30, self._ROW_H)
 
     def _back_rect(self):
-        y = self._action_row_y() + self._ROW_H + self._ROW_GAP + 18  # room for status line
+        y = self._second_row_y() + self._ROW_H + self._ROW_GAP + 12  # room for status line
         return (30, y, W - 60, self._ROW_H)
 
     def draw(self, surf: pygame.Surface):
@@ -572,11 +578,12 @@ class SettingsScreen:
         for i, (label, _) in enumerate(self._NAV_ITEMS):
             ui.rect_btn(surf, label, self._nav_rect(i), ui.CARD, font=ui._F_LG, radius=8)
 
+        ui.rect_btn(surf, "Check for Update", self._update_rect(), ui.CARD, font=ui._F_MD, radius=8)
         ui.rect_btn(surf, "Reconnect OBD", self._reconnect_rect(), ui.CARD, font=ui._F_MD, radius=8)
         ui.rect_btn(surf, "Restart App", self._restart_rect(), ui.DANGER, font=ui._F_MD, radius=8)
 
         if self._status and time.monotonic() < self._status_until:
-            status_y = self._action_row_y() + self._ROW_H + 6
+            status_y = self._second_row_y() + self._ROW_H + 5
             ui.text(surf, self._status, W // 2, status_y, ui._F_SM, ui.ACCENT, anchor="midtop")
 
         ui.rect_btn(surf, self._BACK_LABEL, self._back_rect(), ui.PANEL, font=ui._F_LG, radius=8)
@@ -585,6 +592,8 @@ class SettingsScreen:
         for i, (_, key) in enumerate(self._NAV_ITEMS):
             if ui.hit(self._nav_rect(i), pos):
                 return key
+        if ui.hit(self._update_rect(), pos):
+            return "action:check_update"
         if ui.hit(self._reconnect_rect(), pos):
             return "action:reconnect_obd"
         if ui.hit(self._restart_rect(), pos):

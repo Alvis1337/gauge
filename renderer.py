@@ -19,6 +19,16 @@ STATUS_BAR_H     = 18
 STATUS_BAR_COLOR = (10, 10, 10)
 STATUS_BAR_LINE  = (50, 50, 50)
 
+# (message, color) shown in place of the version string while an update
+# check/apply is in flight — "idle" (the common case) shows the version instead.
+UPDATE_STATUS_LABELS = {
+    "checking":    ("Checking for update...", LABEL_COLOR),
+    "updating":    ("Updating...",            (255, 170,  68)),
+    "restarting":  ("Restarting...",          (255, 170,  68)),
+    "up_to_date":  ("Up to date",             CONN_OK),
+    "error":       ("Update failed",          CONN_BAD),
+}
+
 ARC_START_DEG = 135      # degrees (pygame: 0=right, ccw positive — we convert below)
 ARC_SWEEP_DEG = 270
 
@@ -55,13 +65,16 @@ class GaugeRenderer:
         self._connected = False
         self._wifi_connected = False
         self._bt_powered = False
+        self._update_status = "idle"
 
     def update(self, data: GaugeData, connected: bool = False,
-               wifi_connected: bool = False, bt_powered: bool = False):
+               wifi_connected: bool = False, bt_powered: bool = False,
+               update_status: str = "idle"):
         self._data = data
         self._connected = connected
         self._wifi_connected = wifi_connected
         self._bt_powered = bt_powered
+        self._update_status = update_status
 
     def _obd_color(self):
         if not self._connected:
@@ -75,8 +88,11 @@ class GaugeRenderer:
         pygame.draw.line(self._surface, STATUS_BAR_LINE,
                           (0, STATUS_BAR_H - 1), (w, STATUS_BAR_H - 1))
 
-        ver_surf = self._font_status.render(f"v{config.VERSION}", True, LABEL_COLOR)
-        self._surface.blit(ver_surf, ver_surf.get_rect(midleft=(8, STATUS_BAR_H // 2)))
+        label, color = UPDATE_STATUS_LABELS.get(self._update_status, (None, None))
+        if label is None:
+            label, color = f"v{config.VERSION}", LABEL_COLOR
+        left_surf = self._font_status.render(label, True, color)
+        self._surface.blit(left_surf, left_surf.get_rect(midleft=(8, STATUS_BAR_H // 2)))
 
         items = [
             ("OBD",  self._obd_color()),
