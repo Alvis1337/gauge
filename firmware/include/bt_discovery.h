@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <string>
 #include <vector>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include "ble_transport.h"
 
 struct BtScanResult {
@@ -17,6 +19,17 @@ struct BtScanResult {
 };
 
 namespace bt_discovery {
+
+// Now that the settings UI can trigger a manual scan from its own task
+// while obd_task (on the other core) may independently call discover()
+// -> scan() as part of its own auto-discovery fallback, two tasks could
+// otherwise hit NimBLE's single scan state machine at once. A plain
+// mutex serializes them — whichever call loses the race just waits for
+// the other's scan window to finish instead of racing it.
+inline SemaphoreHandle_t _scanMutex() {
+    static SemaphoreHandle_t m = xSemaphoreCreateMutex();
+    return m;
+}
 
 // Substrings seen in real ELM327/OBD BLE adapter advertised names —
 // matched case-insensitively. Not exhaustive; a device that doesn't match
@@ -36,6 +49,8 @@ inline bool looksLikeObdName(const std::string &name) {
 // device list, where a person's judgment substitutes for verifying every
 // device seen.
 inline std::vector<BtScanResult> scan(uint32_t scan_seconds = 6) {
+    xSemaphoreTake(_scanMutex(), portMAX_DELAY);
+
     NimBLEScan *pScan = NimBLEDevice::getScan();
     pScan->setActiveScan(true);
     NimBLEScanResults results = pScan->start(scan_seconds, false);
@@ -51,6 +66,8 @@ inline std::vector<BtScanResult> scan(uint32_t scan_seconds = 6) {
         return looksLikeObdName(a.name) && !looksLikeObdName(b.name);
     });
     pScan->clearResults();
+
+    xSemaphoreGive(_scanMutex());
     return out;
 }
 

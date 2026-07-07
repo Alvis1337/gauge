@@ -1,11 +1,12 @@
 // Settings screen: WiFi (scan/connect, used only for OTA checks), manual
-// "Check for Update", and touch calibration. Reached via a long-press on
-// the gauge screen's bottom-right corner, mirroring the Pi build's UX.
+// "Check for Update", touch calibration, and OBD adapter selection.
+// Reached via a long-press on the gauge screen's bottom-right corner,
+// mirroring the Pi build's UX.
 //
-// Background work (WiFi scan, WiFi connect, OTA fetch) runs on its own
-// FreeRTOS task rather than blocking the UI — but LVGL itself isn't
-// thread-safe, so those tasks never call lv_* directly. They write into
-// a mutex-protected status struct that the main loop (the only thing
+// Background work (WiFi scan, WiFi connect, OTA fetch, OBD scan) runs on
+// its own FreeRTOS task rather than blocking the UI — but LVGL itself
+// isn't thread-safe, so those tasks never call lv_* directly. They write
+// into a mutex-protected status struct that the main loop (the only thing
 // that calls lv_timer_handler()) polls once per frame and reflects into
 // labels — the same pattern main.cpp already uses for OBD/gauge data.
 #pragma once
@@ -16,6 +17,7 @@
 #include "wifi_manager.h"
 #include "ota_updater.h"
 #include "xpt2046_driver.h"
+#include "bt_discovery.h"
 #include "theme.h"
 
 class SettingsUI {
@@ -28,6 +30,8 @@ public:
         _buildWifiListScreen();
         _buildWifiPasswordScreen();
         _buildTouchCalScreen();
+        _buildObdScreen();
+        _refreshObdStatusLabel();
     }
 
     lv_obj_t *settingsScreen() { return _settingsScreen; }
@@ -56,6 +60,8 @@ public:
         portENTER_CRITICAL(&_mux);
         bool scanDirty = _scanDirty;
         _scanDirty = false;
+        bool btScanDirty = _btScanDirty;
+        _btScanDirty = false;
         bool statusDirty = _statusDirty;
         _statusDirty = false;
         portEXIT_CRITICAL(&_mux);
@@ -65,6 +71,12 @@ public:
             std::vector<WifiScanResult> results = _scanResults;
             portEXIT_CRITICAL(&_mux);
             _rebuildWifiList(results);
+        }
+        if (btScanDirty) {
+            portENTER_CRITICAL(&_mux);
+            std::vector<BtScanResult> results = _btScanResults;
+            portEXIT_CRITICAL(&_mux);
+            _rebuildObdList(results);
         }
         if (statusDirty) {
             portENTER_CRITICAL(&_mux);
@@ -84,6 +96,7 @@ private:
     lv_obj_t *_wifiListScreen = nullptr;
     lv_obj_t *_wifiPasswordScreen = nullptr;
     lv_obj_t *_touchCalScreen = nullptr;
+    lv_obj_t *_obdScreen = nullptr;
 
     lv_obj_t *_wifiStatusLabel = nullptr;
     lv_obj_t *_otaStatusLabel = nullptr;
@@ -103,8 +116,16 @@ private:
     int _touchCalRawX[4] = {0, 0, 0, 0};
     int _touchCalRawY[4] = {0, 0, 0, 0};
 
+    lv_obj_t *_obdStatusLabel = nullptr;
+    lv_obj_t *_obdCurrentLabel = nullptr;
+    lv_obj_t *_obdAutoDiscoverSwitch = nullptr;
+    lv_obj_t *_obdListContainer = nullptr;
+    lv_obj_t *_obdListStatusLabel = nullptr;
+
     portMUX_TYPE _mux = portMUX_INITIALIZER_UNLOCKED;
     std::vector<WifiScanResult> _scanResults;
+    std::vector<BtScanResult> _btScanResults;
+    bool _btScanDirty = false;
     bool _scanDirty = false;
     String _statusText;
     bool _statusDirty = false;
@@ -123,6 +144,20 @@ private:
         lv_label_set_text(_wifiStatusLabel, text.c_str());
     }
 
+    // Updates both the settings-screen button label and the OBD Adapter
+    // screen's own "current adapter" label — called synchronously (this
+    // never runs off the UI thread) whenever the saved adapter changes.
+    void _refreshObdStatusLabel() {
+        std::string name = _settings->obdBtName();
+        std::string addr = _settings->obdBtAddress();
+        String text;
+        if (!name.empty())      text = "OBD Adapter: " + String(name.c_str());
+        else if (!addr.empty()) text = "OBD Adapter: " + String(addr.c_str());
+        else                     text = "OBD Adapter: not configured";
+        if (_obdStatusLabel)  lv_label_set_text(_obdStatusLabel, text.c_str());
+        if (_obdCurrentLabel) lv_label_set_text(_obdCurrentLabel, text.c_str());
+    }
+
     // ── settings screen ──────────────────────────────────────────────────
     void _buildSettingsScreen() {
         _settingsScreen = lv_obj_create(nullptr);
@@ -135,8 +170,8 @@ private:
         lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 0);
 
         lv_obj_t *wifiBtn = lv_button_create(_settingsScreen);
-        lv_obj_set_size(wifiBtn, 456, 44);
-        lv_obj_align(wifiBtn, LV_ALIGN_TOP_MID, 0, 50);
+        lv_obj_set_size(wifiBtn, 456, 40);
+        lv_obj_align(wifiBtn, LV_ALIGN_TOP_MID, 0, 46);
         lv_obj_add_event_cb(wifiBtn, [](lv_event_t *e) {
             auto *self = (SettingsUI *)lv_event_get_user_data(e);
             self->_startWifiScan();
@@ -146,9 +181,20 @@ private:
         lv_label_set_text(_wifiStatusLabel, "WiFi: not configured");
         lv_obj_center(_wifiStatusLabel);
 
+        lv_obj_t *obdBtn = lv_button_create(_settingsScreen);
+        lv_obj_set_size(obdBtn, 456, 40);
+        lv_obj_align(obdBtn, LV_ALIGN_TOP_MID, 0, 90);
+        lv_obj_add_event_cb(obdBtn, [](lv_event_t *e) {
+            auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            self->_openObdScreen();
+        }, LV_EVENT_CLICKED, this);
+        _obdStatusLabel = lv_label_create(obdBtn);
+        lv_label_set_text(_obdStatusLabel, "OBD Adapter: not configured");
+        lv_obj_center(_obdStatusLabel);
+
         lv_obj_t *otaBtn = lv_button_create(_settingsScreen);
-        lv_obj_set_size(otaBtn, 456, 44);
-        lv_obj_align(otaBtn, LV_ALIGN_TOP_MID, 0, 104);
+        lv_obj_set_size(otaBtn, 456, 40);
+        lv_obj_align(otaBtn, LV_ALIGN_TOP_MID, 0, 134);
         lv_obj_set_style_bg_color(otaBtn, theme::rpm(), 0);
         lv_obj_add_event_cb(otaBtn, [](lv_event_t *e) {
             auto *self = (SettingsUI *)lv_event_get_user_data(e);
@@ -159,8 +205,8 @@ private:
         lv_obj_center(otaBtnLabel);
 
         lv_obj_t *touchCalBtn = lv_button_create(_settingsScreen);
-        lv_obj_set_size(touchCalBtn, 456, 44);
-        lv_obj_align(touchCalBtn, LV_ALIGN_TOP_MID, 0, 158);
+        lv_obj_set_size(touchCalBtn, 456, 40);
+        lv_obj_align(touchCalBtn, LV_ALIGN_TOP_MID, 0, 178);
         lv_obj_add_event_cb(touchCalBtn, [](lv_event_t *e) {
             auto *self = (SettingsUI *)lv_event_get_user_data(e);
             self->_openTouchCal();
@@ -172,7 +218,7 @@ private:
         _otaStatusLabel = lv_label_create(_settingsScreen);
         lv_label_set_text(_otaStatusLabel, "");
         lv_obj_set_style_text_color(_otaStatusLabel, theme::subtext(), 0);
-        lv_obj_align(_otaStatusLabel, LV_ALIGN_TOP_MID, 0, 206);
+        lv_obj_align(_otaStatusLabel, LV_ALIGN_TOP_MID, 0, 226);
 
         lv_obj_t *backBtn = lv_button_create(_settingsScreen);
         lv_obj_set_size(backBtn, 456, 44);
@@ -497,6 +543,125 @@ private:
             _updateTouchCalStepUI();
         } else {
             lv_scr_load(_settingsScreen);
+        }
+    }
+
+    // ── OBD adapter screen ────────────────────────────────────────────────
+    // Auto-discovery (bt_discovery::discover(), driven by obd_task) stays
+    // on by default and needs no UI at all when it just works. This
+    // screen is for the two cases it doesn't handle: turning it off for
+    // someone who'd rather pick a specific device, and picking that
+    // device — a scan-and-tap list mirroring the WiFi screen, except
+    // selecting an entry here is a plain settings write (no connect
+    // attempt happens in the picker itself), so it runs directly in the
+    // UI-thread click handler instead of needing its own background task.
+    void _buildObdScreen() {
+        _obdScreen = lv_obj_create(nullptr);
+        lv_obj_set_style_bg_color(_obdScreen, lv_color_hex(0x111111), 0);
+        lv_obj_set_style_pad_all(_obdScreen, 8, 0);
+
+        lv_obj_t *backBtn = lv_button_create(_obdScreen);
+        lv_obj_set_size(backBtn, 70, 30);
+        lv_obj_align(backBtn, LV_ALIGN_TOP_LEFT, 0, 0);
+        lv_obj_add_event_cb(backBtn, [](lv_event_t *e) {
+            auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            lv_scr_load(self->_settingsScreen);
+        }, LV_EVENT_CLICKED, this);
+        lv_obj_t *backLabel = lv_label_create(backBtn);
+        lv_label_set_text(backLabel, "< Back");
+        lv_obj_center(backLabel);
+
+        lv_obj_t *title = lv_label_create(_obdScreen);
+        lv_label_set_text(title, "OBD Adapter");
+        lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 4);
+
+        lv_obj_t *rescanBtn = lv_button_create(_obdScreen);
+        lv_obj_set_size(rescanBtn, 80, 30);
+        lv_obj_align(rescanBtn, LV_ALIGN_TOP_RIGHT, 0, 0);
+        lv_obj_add_event_cb(rescanBtn, [](lv_event_t *e) {
+            auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            self->_startObdScan();
+        }, LV_EVENT_CLICKED, this);
+        lv_obj_t *rescanLabel = lv_label_create(rescanBtn);
+        lv_label_set_text(rescanLabel, "Scan");
+        lv_obj_center(rescanLabel);
+
+        _obdCurrentLabel = lv_label_create(_obdScreen);
+        lv_obj_set_style_text_color(_obdCurrentLabel, theme::subtext(), 0);
+        lv_obj_align(_obdCurrentLabel, LV_ALIGN_TOP_MID, 0, 32);
+
+        lv_obj_t *autoLabel = lv_label_create(_obdScreen);
+        lv_label_set_text(autoLabel, "Auto-discovery");
+        lv_obj_align(autoLabel, LV_ALIGN_TOP_LEFT, 0, 58);
+
+        _obdAutoDiscoverSwitch = lv_switch_create(_obdScreen);
+        lv_obj_align(_obdAutoDiscoverSwitch, LV_ALIGN_TOP_RIGHT, 0, 54);
+        lv_obj_add_event_cb(_obdAutoDiscoverSwitch, [](lv_event_t *e) {
+            auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            bool enabled = lv_obj_has_state(self->_obdAutoDiscoverSwitch, LV_STATE_CHECKED);
+            self->_settings->setAutoDiscoveryEnabled(enabled);
+        }, LV_EVENT_VALUE_CHANGED, this);
+
+        _obdListStatusLabel = lv_label_create(_obdScreen);
+        lv_label_set_text(_obdListStatusLabel, "");
+        lv_obj_set_style_text_color(_obdListStatusLabel, theme::subtext(), 0);
+        lv_obj_align(_obdListStatusLabel, LV_ALIGN_TOP_MID, 0, 88);
+
+        _obdListContainer = lv_list_create(_obdScreen);
+        lv_obj_set_size(_obdListContainer, 464, 186);
+        lv_obj_align(_obdListContainer, LV_ALIGN_BOTTOM_MID, 0, 0);
+    }
+
+    void _openObdScreen() {
+        _refreshObdStatusLabel();
+        if (_settings->autoDiscoveryEnabled()) lv_obj_add_state(_obdAutoDiscoverSwitch, LV_STATE_CHECKED);
+        else lv_obj_remove_state(_obdAutoDiscoverSwitch, LV_STATE_CHECKED);
+        lv_scr_load(_obdScreen);
+    }
+
+    void _startObdScan() {
+        lv_label_set_text(_obdListStatusLabel, "Scanning...");
+        auto *self = this;
+        xTaskCreate([](void *arg) {
+            auto *self = (SettingsUI *)arg;
+            auto results = bt_discovery::scan();
+            portENTER_CRITICAL(&self->_mux);
+            self->_btScanResults = results;
+            self->_btScanDirty = true;
+            portEXIT_CRITICAL(&self->_mux);
+            vTaskDelete(nullptr);
+        }, "obd_scan", 4096, self, 1, nullptr);
+    }
+
+    void _rebuildObdList(const std::vector<BtScanResult> &results) {
+        lv_obj_clean(_obdListContainer);
+        lv_label_set_text(_obdListStatusLabel, results.empty() ? "No devices found" : "");
+        for (size_t i = 0; i < results.size(); i++) {
+            String label = String(results[i].name.c_str());
+            if (bt_discovery::looksLikeObdName(results[i].name)) label += "  (looks like OBD)";
+            lv_obj_t *btn = lv_list_add_button(_obdListContainer, nullptr, label.c_str());
+            // Same index-into-last-scan-result approach as the WiFi list —
+            // safe since a rescan replaces the whole result set + list
+            // together, so there's no window where the index is stale.
+            lv_obj_set_user_data(btn, (void *)(intptr_t)i);
+            lv_obj_add_event_cb(btn, [](lv_event_t *e) {
+                auto *self = (SettingsUI *)lv_event_get_user_data(e);
+                intptr_t idx = (intptr_t)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
+                portENTER_CRITICAL(&self->_mux);
+                bool valid = (size_t)idx < self->_btScanResults.size();
+                std::string addr = valid ? self->_btScanResults[idx].address : "";
+                std::string name = valid ? self->_btScanResults[idx].name : "";
+                portEXIT_CRITICAL(&self->_mux);
+                if (!valid) return;
+                // Just a settings write + a signal for obd_task to retry
+                // now — no connect attempt happens here, so this can run
+                // straight in the click callback with no background task.
+                self->_settings->setObdBtAddress(addr);
+                self->_settings->setObdBtName(name);
+                self->_settings->requestObdReconnect();
+                self->_refreshObdStatusLabel();
+                lv_label_set_text(self->_obdListStatusLabel, "Saved -- reconnecting...");
+            }, LV_EVENT_CLICKED, this);
         }
     }
 
