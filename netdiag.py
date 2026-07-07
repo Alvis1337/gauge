@@ -34,6 +34,24 @@ def adapter_powered() -> str:
         return f"<bluetoothctl failed: {e!r}>"
 
 
+def bt_powered() -> bool:
+    """Plain bool version of adapter_powered(), for the status bar."""
+    return adapter_powered().strip() == "Powered: yes"
+
+
+def wifi_connected() -> bool:
+    """Whether NetworkManager currently has an active WiFi connection."""
+    try:
+        out = subprocess.run(
+            ["nmcli", "-t", "-f", "ACTIVE,SSID", "dev", "wifi"],
+            timeout=5, capture_output=True, text=True, check=False,
+        ).stdout
+        return any(line.startswith("yes:") for line in out.splitlines())
+    except Exception as e:
+        log.debug("wifi_connected() check failed: %s: %s", type(e).__name__, e)
+        return False
+
+
 def device_visible(address: str, timeout: float = 5.0) -> bool:
     """A quick targeted BLE scan for the configured adapter's address —
     tells apart "adapter is off/out of range/not advertising" from "it's

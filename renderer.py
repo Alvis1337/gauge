@@ -15,6 +15,10 @@ CONN_STALE  = (255, 170,  68)   # connected but no fresh poll recently
 CONN_BAD    = (255,  68,  68)   # not connected
 STALE_AFTER_S = 3.0
 
+STATUS_BAR_H     = 18
+STATUS_BAR_COLOR = (10, 10, 10)
+STATUS_BAR_LINE  = (50, 50, 50)
+
 ARC_START_DEG = 135      # degrees (pygame: 0=right, ccw positive — we convert below)
 ARC_SWEEP_DEG = 270
 
@@ -49,28 +53,49 @@ class GaugeRenderer:
         self._font_status = pygame.font.SysFont("monospace", 13, bold=True)
         self._data = GaugeData()
         self._connected = False
+        self._wifi_connected = False
+        self._bt_powered = False
 
-    def update(self, data: GaugeData, connected: bool = False):
+    def update(self, data: GaugeData, connected: bool = False,
+               wifi_connected: bool = False, bt_powered: bool = False):
         self._data = data
         self._connected = connected
+        self._wifi_connected = wifi_connected
+        self._bt_powered = bt_powered
 
-    def _draw_status(self, w):
+    def _obd_color(self):
         if not self._connected:
-            color, label = CONN_BAD, "OBD"
-        elif (time.monotonic() - self._data.ts) > STALE_AFTER_S:
-            color, label = CONN_STALE, "OBD"
-        else:
-            color, label = CONN_OK, "OBD"
-        cx, cy = w - 12, 12
-        pygame.draw.circle(self._surface, color, (cx, cy), 5)
-        s = self._font_status.render(label, True, LABEL_COLOR)
-        r = s.get_rect(midright=(cx - 10, cy))
-        self._surface.blit(s, r)
+            return CONN_BAD
+        if (time.monotonic() - self._data.ts) > STALE_AFTER_S:
+            return CONN_STALE
+        return CONN_OK
+
+    def _draw_status_bar(self, w):
+        pygame.draw.rect(self._surface, STATUS_BAR_COLOR, (0, 0, w, STATUS_BAR_H))
+        pygame.draw.line(self._surface, STATUS_BAR_LINE,
+                          (0, STATUS_BAR_H - 1), (w, STATUS_BAR_H - 1))
+
+        ver_surf = self._font_status.render(f"v{config.VERSION}", True, LABEL_COLOR)
+        self._surface.blit(ver_surf, ver_surf.get_rect(midleft=(8, STATUS_BAR_H // 2)))
+
+        items = [
+            ("OBD",  self._obd_color()),
+            ("BT",   CONN_OK if self._bt_powered else CONN_BAD),
+            ("WiFi", CONN_OK if self._wifi_connected else CONN_BAD),
+        ]
+        x = w - 10
+        for label, color in items:
+            s = self._font_status.render(label, True, LABEL_COLOR)
+            r = s.get_rect(midright=(x, STATUS_BAR_H // 2))
+            self._surface.blit(s, r)
+            x = r.left - 10
+            pygame.draw.circle(self._surface, color, (x, STATUS_BAR_H // 2), 4)
+            x -= 12
 
     def draw(self):
         w, h = self._surface.get_size()
         self._surface.fill(BG_COLOR)
-        self._draw_status(w)
+        self._draw_status_bar(w)
 
         gauges = [
             ("BOOST",   self._data.boost_psi,  self._data.boost_display(),
@@ -83,11 +108,12 @@ class GaugeRenderer:
              config.GAUGE_SPECS[3][1], config.GAUGE_SPECS[3][2], config.GAUGE_SPECS[3][3]),
         ]
 
+        top = STATUS_BAR_H
         cell_w = w // 2
-        cell_h = h // 2
+        cell_h = (h - top) // 2
         for i, (label, value, text, vmin, vmax, color) in enumerate(gauges):
             cx = cell_w * (i % 2) + cell_w // 2
-            cy = cell_h * (i // 2) + cell_h // 2
+            cy = top + cell_h * (i // 2) + cell_h // 2
             radius = int(min(cell_w, cell_h) * 0.38)
             self._draw_gauge(cx, cy, radius, label, value, text, vmin, vmax, color)
 

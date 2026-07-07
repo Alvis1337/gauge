@@ -66,6 +66,19 @@ def _acquire_singleton_lock():
 
 
 _DISCOVERY_AFTER_FAILURES = 3   # consecutive failed *connect* attempts before trying auto-discovery
+_STATUS_POLL_INTERVAL_S = 5.0   # how often the status bar's WiFi/BT checks re-shell out
+
+
+def _status_thread(status_holder: list, stop_evt: threading.Event):
+    """Keeps the status bar's WiFi/Bluetooth indicators fed without shelling
+    out to nmcli/bluetoothctl on the render thread (30fps would make that
+    a subprocess spawn per frame)."""
+    while not stop_evt.is_set():
+        status_holder[0] = {
+            "wifi": netdiag.wifi_connected(),
+            "bt": netdiag.bt_powered(),
+        }
+        stop_evt.wait(_STATUS_POLL_INTERVAL_S)
 
 
 def _obd_thread(client: ObdClient, data_holder: list, stop_evt: threading.Event,
@@ -164,9 +177,13 @@ def main() -> bool:
     client   = ObdClient()
     data_ref = [GaugeData()]
     address_ref = [""]
+    status_ref = [{"wifi": False, "bt": False}]
 
     threading.Thread(target=_obd_thread,
                      args=(client, data_ref, stop_evt, address_ref, force_reconnect_evt),
+                     daemon=True).start()
+    threading.Thread(target=_status_thread,
+                     args=(status_ref, stop_evt),
                      daemon=True).start()
 
     # Screen stack
@@ -225,10 +242,11 @@ def main() -> bool:
                 else:
                     corner_down = None
 
-                renderer.update(data_ref[0], client.connected)
+                renderer.update(data_ref[0], client.connected,
+                                status_ref[0]["wifi"], status_ref[0]["bt"])
                 renderer.draw()
-                # Settings hint dot in corner
-                pygame.draw.circle(screen, (60, 60, 60), (10, 6), 5)
+                # Settings hint dot in corner (below the status bar, out of its way)
+                pygame.draw.circle(screen, (60, 60, 60), (10, 50), 5)
 
             else:
                 if screen_obj:
