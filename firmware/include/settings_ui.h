@@ -40,17 +40,32 @@ public:
     // (scan results, connect/OTA status) into the UI without any other
     // task touching LVGL directly.
     void poll() {
+        // Every heap-allocating copy (String, vector<WifiScanResult>) used
+        // to happen unconditionally inside this critical section, on every
+        // single call — i.e. 60 times a second, forever, disabling
+        // interrupts around allocator work regardless of whether anything
+        // had actually changed. ESP-IDF explicitly warns against blocking
+        // or allocating inside a critical section (it stalls the other
+        // core / delays interrupts long enough to risk watchdog resets),
+        // so only take the lock, and only copy, when a background task
+        // actually posted something new.
         portENTER_CRITICAL(&_mux);
         bool scanDirty = _scanDirty;
         _scanDirty = false;
         bool statusDirty = _statusDirty;
         _statusDirty = false;
-        String status = _statusText;
-        std::vector<WifiScanResult> results = _scanResults;
         portEXIT_CRITICAL(&_mux);
 
-        if (scanDirty) _rebuildWifiList(results);
+        if (scanDirty) {
+            portENTER_CRITICAL(&_mux);
+            std::vector<WifiScanResult> results = _scanResults;
+            portEXIT_CRITICAL(&_mux);
+            _rebuildWifiList(results);
+        }
         if (statusDirty) {
+            portENTER_CRITICAL(&_mux);
+            String status = _statusText;
+            portEXIT_CRITICAL(&_mux);
             lv_label_set_text(_otaStatusLabel, status.c_str());
             lv_label_set_text(_wifiPasswordStatus, status.c_str());
         }
