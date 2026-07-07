@@ -2,6 +2,7 @@
 // settings.py's JSON file. Namespace + key-value like the Python
 // _DEFAULTS dict, just backed by flash instead of a file.
 #pragma once
+#include <Arduino.h>
 #include <Preferences.h>
 #include <string>
 
@@ -42,6 +43,33 @@ public:
         _prefs.putInt("touch_y_max", y_max);
     }
 
+    // Whether obd_task should fall back to bt_discovery::discover() after
+    // repeated connect failures. Defaults on; the settings UI's manual
+    // "scan and pick" OBD Adapter screen is the way to turn it off for
+    // someone who'd rather point at a specific device than let the
+    // name-hint heuristic guess.
+    bool autoDiscoveryEnabled() { return _prefs.getBool("obd_auto_disc", true); }
+    void setAutoDiscoveryEnabled(bool v) { _prefs.putBool("obd_auto_disc", v); }
+
+    // In-memory only (never persisted) — lets the settings UI tell
+    // obd_task to retry right now after the address changes, instead of
+    // waiting out whatever's left of the current backoff delay (up to
+    // 30s). Firmware equivalent of the Pi build's force_reconnect_evt.
+    void requestObdReconnect() {
+        portENTER_CRITICAL(&_reconnectMux);
+        _reconnectRequested = true;
+        portEXIT_CRITICAL(&_reconnectMux);
+    }
+    bool consumeObdReconnectRequest() {
+        portENTER_CRITICAL(&_reconnectMux);
+        bool r = _reconnectRequested;
+        _reconnectRequested = false;
+        portEXIT_CRITICAL(&_reconnectMux);
+        return r;
+    }
+
 private:
     Preferences _prefs;
+    portMUX_TYPE _reconnectMux = portMUX_INITIALIZER_UNLOCKED;
+    bool _reconnectRequested = false;
 };

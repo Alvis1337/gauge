@@ -201,7 +201,11 @@ static void obd_task(void *) {
 
             while (client.connected) {
                 std::string current = gSettings.obdBtAddress();
-                if (current != address) break;  // settings changed elsewhere, reconnect fresh
+                // Settings changed elsewhere (address edited, or the
+                // settings UI's OBD Adapter picker explicitly requested a
+                // reconnect after saving a new pick) — reconnect fresh
+                // rather than keep polling whatever we're currently on.
+                if (current != address || gSettings.consumeObdReconnectRequest()) break;
                 GaugeData d = client.poll();
                 portENTER_CRITICAL(&gShared.mux);
                 gShared.data = d;
@@ -212,7 +216,7 @@ static void obd_task(void *) {
             client.disconnect();
         }
 
-        if (consecutive_failures >= DISCOVERY_AFTER_FAILURES) {
+        if (gSettings.autoDiscoveryEnabled() && consecutive_failures >= DISCOVERY_AFTER_FAILURES) {
             std::string found = bt_discovery::discover();
             if (!found.empty() && found != address) {
                 gSettings.setObdBtAddress(found);
@@ -222,7 +226,13 @@ static void obd_task(void *) {
             consecutive_failures = 0;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(retry_delay_ms));
+        // Same backoff as before, but polled in short slices so a manual
+        // pick from the OBD Adapter screen takes effect right away
+        // instead of waiting out up to 30s of remaining backoff.
+        for (uint32_t waited = 0; waited < retry_delay_ms; waited += 100) {
+            if (gSettings.consumeObdReconnectRequest()) break;
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
         retry_delay_ms = std::min<uint32_t>(retry_delay_ms * 2, 30000);
     }
 }
