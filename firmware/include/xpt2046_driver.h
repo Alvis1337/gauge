@@ -9,7 +9,9 @@
 //     first sample after switching the ADC mux is discarded (hasn't
 //     settled yet).
 //   - press detection needs several consecutive above-threshold pressure
-//     reads, not just one, to reject noise as a false touch.
+//     reads spaced ~20ms apart, not just one, to reject noise as a false
+//     touch — the same 5-reads/20ms figures touch_debug.py (the Pi build's
+//     hand-calibration tool) actually proved necessary on this panel.
 // No T_IRQ pin is wired — pressure is polled every frame instead, exactly
 // like the Pi build, which avoids needing an interrupt-capable GPIO.
 #pragma once
@@ -25,8 +27,8 @@ public:
     static constexpr uint8_t CMD_Z2 = 0xC0;
 
     static constexpr int PRESSURE_THRESHOLD  = 500;
-    static constexpr int PRESSURE_SAMPLES    = 4;
-    static constexpr int PRESSURE_SAMPLE_GAP_MS = 3;
+    static constexpr int PRESSURE_SAMPLES    = 5;
+    static constexpr int PRESSURE_SAMPLE_GAP_MS = 20;
     static constexpr int POSITION_SAMPLES     = 5;
 
     XPT2046Driver(int pin_cs, SPIClass &spi) : _cs(pin_cs), _spi(spi) {}
