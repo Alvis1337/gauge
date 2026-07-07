@@ -1,6 +1,6 @@
-// Settings screen: WiFi (scan/connect, used only for OTA checks) + manual
-// "Check for Update" button. Reached via a long-press on the gauge
-// screen's bottom-right corner, mirroring the Pi build's UX.
+// Settings screen: WiFi (scan/connect, used only for OTA checks), manual
+// "Check for Update", and touch calibration. Reached via a long-press on
+// the gauge screen's bottom-right corner, mirroring the Pi build's UX.
 //
 // Background work (WiFi scan, WiFi connect, OTA fetch) runs on its own
 // FreeRTOS task rather than blocking the UI — but LVGL itself isn't
@@ -10,20 +10,24 @@
 // labels — the same pattern main.cpp already uses for OBD/gauge data.
 #pragma once
 #include <lvgl.h>
+#include <algorithm>
 #include <vector>
 #include "gauge_settings.h"
 #include "wifi_manager.h"
 #include "ota_updater.h"
+#include "xpt2046_driver.h"
 #include "theme.h"
 
 class SettingsUI {
 public:
-    void init(GaugeSettings *settings, WifiManager *wifi) {
+    void init(GaugeSettings *settings, WifiManager *wifi, XPT2046Driver *touch) {
         _settings = settings;
         _wifi = wifi;
+        _touch = touch;
         _buildSettingsScreen();
         _buildWifiListScreen();
         _buildWifiPasswordScreen();
+        _buildTouchCalScreen();
     }
 
     lv_obj_t *settingsScreen() { return _settingsScreen; }
@@ -40,17 +44,32 @@ public:
     // (scan results, connect/OTA status) into the UI without any other
     // task touching LVGL directly.
     void poll() {
+        // Every heap-allocating copy (String, vector<WifiScanResult>) used
+        // to happen unconditionally inside this critical section, on every
+        // single call — i.e. 60 times a second, forever, disabling
+        // interrupts around allocator work regardless of whether anything
+        // had actually changed. ESP-IDF explicitly warns against blocking
+        // or allocating inside a critical section (it stalls the other
+        // core / delays interrupts long enough to risk watchdog resets),
+        // so only take the lock, and only copy, when a background task
+        // actually posted something new.
         portENTER_CRITICAL(&_mux);
         bool scanDirty = _scanDirty;
         _scanDirty = false;
         bool statusDirty = _statusDirty;
         _statusDirty = false;
-        String status = _statusText;
-        std::vector<WifiScanResult> results = _scanResults;
         portEXIT_CRITICAL(&_mux);
 
-        if (scanDirty) _rebuildWifiList(results);
+        if (scanDirty) {
+            portENTER_CRITICAL(&_mux);
+            std::vector<WifiScanResult> results = _scanResults;
+            portEXIT_CRITICAL(&_mux);
+            _rebuildWifiList(results);
+        }
         if (statusDirty) {
+            portENTER_CRITICAL(&_mux);
+            String status = _statusText;
+            portEXIT_CRITICAL(&_mux);
             lv_label_set_text(_otaStatusLabel, status.c_str());
             lv_label_set_text(_wifiPasswordStatus, status.c_str());
         }
@@ -59,10 +78,12 @@ public:
 private:
     GaugeSettings *_settings = nullptr;
     WifiManager *_wifi = nullptr;
+    XPT2046Driver *_touch = nullptr;
 
     lv_obj_t *_settingsScreen = nullptr;
     lv_obj_t *_wifiListScreen = nullptr;
     lv_obj_t *_wifiPasswordScreen = nullptr;
+    lv_obj_t *_touchCalScreen = nullptr;
 
     lv_obj_t *_wifiStatusLabel = nullptr;
     lv_obj_t *_otaStatusLabel = nullptr;
@@ -71,6 +92,16 @@ private:
     lv_obj_t *_wifiPasswordTitle = nullptr;
     lv_obj_t *_wifiPasswordTextarea = nullptr;
     lv_obj_t *_wifiPasswordStatus = nullptr;
+
+    lv_obj_t *_touchCalStepLabel = nullptr;
+    lv_obj_t *_touchCalTarget = nullptr;
+    lv_obj_t *_touchCalResultLabel = nullptr;
+    lv_obj_t *_touchCalActionBtn = nullptr;
+    lv_obj_t *_touchCalActionLabel = nullptr;
+    int _touchCalStep = 0;
+    bool _touchCalBad = false;
+    int _touchCalRawX[4] = {0, 0, 0, 0};
+    int _touchCalRawY[4] = {0, 0, 0, 0};
 
     portMUX_TYPE _mux = portMUX_INITIALIZER_UNLOCKED;
     std::vector<WifiScanResult> _scanResults;
@@ -127,10 +158,21 @@ private:
         lv_label_set_text(otaBtnLabel, "Check for Update");
         lv_obj_center(otaBtnLabel);
 
+        lv_obj_t *touchCalBtn = lv_button_create(_settingsScreen);
+        lv_obj_set_size(touchCalBtn, 456, 44);
+        lv_obj_align(touchCalBtn, LV_ALIGN_TOP_MID, 0, 158);
+        lv_obj_add_event_cb(touchCalBtn, [](lv_event_t *e) {
+            auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            self->_openTouchCal();
+        }, LV_EVENT_CLICKED, this);
+        lv_obj_t *touchCalBtnLabel = lv_label_create(touchCalBtn);
+        lv_label_set_text(touchCalBtnLabel, "Touch Calibrate");
+        lv_obj_center(touchCalBtnLabel);
+
         _otaStatusLabel = lv_label_create(_settingsScreen);
         lv_label_set_text(_otaStatusLabel, "");
         lv_obj_set_style_text_color(_otaStatusLabel, theme::subtext(), 0);
-        lv_obj_align(_otaStatusLabel, LV_ALIGN_TOP_MID, 0, 152);
+        lv_obj_align(_otaStatusLabel, LV_ALIGN_TOP_MID, 0, 206);
 
         lv_obj_t *backBtn = lv_button_create(_settingsScreen);
         lv_obj_set_size(backBtn, 456, 44);
@@ -306,6 +348,156 @@ private:
             delete ctx;
             vTaskDelete(nullptr);
         }, "wifi_connect", 4096, ctx, 1, nullptr);
+    }
+
+    // ── touch calibration screen ─────────────────────────────────────────
+    // Tap the 4 corners in turn; whatever raw ADC reading was under the
+    // finger at each tap is recorded (not the calibrated pixel position —
+    // that's the whole point, since the existing calibration may be wrong).
+    // The screen background itself is the clickable target: LVGL's own
+    // click detection already rides on the debounced press/release from
+    // xpt2046_driver.h, so "a tap happened" is exactly the same signal the
+    // gauge screen's corner long-press already relies on.
+    struct _CalTarget { int x, y; const char *label; };
+    static _CalTarget _calTarget(int step) {
+        static const _CalTarget kTargets[4] = {
+            {20, 20, "Top-left"},
+            {460, 20, "Top-right"},
+            {460, 300, "Bottom-right"},
+            {20, 300, "Bottom-left"},
+        };
+        return kTargets[step];
+    }
+
+    void _buildTouchCalScreen() {
+        _touchCalScreen = lv_obj_create(nullptr);
+        lv_obj_set_style_bg_color(_touchCalScreen, lv_color_hex(0x111111), 0);
+        // No padding here (unlike the other screens) — target coordinates
+        // below are absolute panel pixels, and any default content-area
+        // inset would throw off where the crosshair actually lands.
+        lv_obj_set_style_pad_all(_touchCalScreen, 0, 0);
+        lv_obj_add_flag(_touchCalScreen, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(_touchCalScreen, [](lv_event_t *e) {
+            auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            self->_onTouchCalTap();
+        }, LV_EVENT_CLICKED, this);
+
+        lv_obj_t *title = lv_label_create(_touchCalScreen);
+        lv_label_set_text(title, "Touch Calibration");
+        lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+        lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 4);
+
+        _touchCalStepLabel = lv_label_create(_touchCalScreen);
+        lv_obj_set_style_text_color(_touchCalStepLabel, theme::subtext(), 0);
+        lv_obj_align(_touchCalStepLabel, LV_ALIGN_TOP_MID, 0, 40);
+
+        _touchCalTarget = lv_obj_create(_touchCalScreen);
+        lv_obj_remove_style_all(_touchCalTarget);
+        // Plain lv_obj instances default to clickable (unlike labels, which
+        // clear it in their own constructor) — without this, a tap landing
+        // exactly on the dot would be swallowed here instead of reaching
+        // the screen background's tap handler below.
+        lv_obj_clear_flag(_touchCalTarget, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_size(_touchCalTarget, 20, 20);
+        lv_obj_set_style_radius(_touchCalTarget, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(_touchCalTarget, theme::rpm(), 0);
+        lv_obj_set_style_bg_opa(_touchCalTarget, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(_touchCalTarget, 2, 0);
+        lv_obj_set_style_border_color(_touchCalTarget, lv_color_white(), 0);
+
+        _touchCalResultLabel = lv_label_create(_touchCalScreen);
+        lv_obj_set_style_text_font(_touchCalResultLabel, &lv_font_montserrat_28, 0);
+        lv_obj_align(_touchCalResultLabel, LV_ALIGN_CENTER, 0, -20);
+        lv_obj_add_flag(_touchCalResultLabel, LV_OBJ_FLAG_HIDDEN);
+
+        _touchCalActionBtn = lv_button_create(_touchCalScreen);
+        lv_obj_set_size(_touchCalActionBtn, 160, 44);
+        lv_obj_align(_touchCalActionBtn, LV_ALIGN_CENTER, 0, 30);
+        lv_obj_add_event_cb(_touchCalActionBtn, [](lv_event_t *e) {
+            auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            self->_onTouchCalAction();
+        }, LV_EVENT_CLICKED, this);
+        _touchCalActionLabel = lv_label_create(_touchCalActionBtn);
+        lv_obj_center(_touchCalActionLabel);
+        lv_obj_add_flag(_touchCalActionBtn, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    void _openTouchCal() {
+        _touchCalStep = 0;
+        _touchCalBad = false;
+        lv_obj_add_flag(_touchCalResultLabel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(_touchCalActionBtn, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(_touchCalTarget, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(_touchCalStepLabel, LV_OBJ_FLAG_HIDDEN);
+        _updateTouchCalStepUI();
+        lv_scr_load(_touchCalScreen);
+    }
+
+    void _updateTouchCalStepUI() {
+        _CalTarget t = _calTarget(_touchCalStep);
+        lv_obj_align(_touchCalTarget, LV_ALIGN_TOP_LEFT, t.x - 10, t.y - 10);
+        char buf[48];
+        snprintf(buf, sizeof(buf), "Tap: %s  (Step %d/4)", t.label, _touchCalStep + 1);
+        lv_label_set_text(_touchCalStepLabel, buf);
+    }
+
+    void _onTouchCalTap() {
+        if (_touchCalStep >= 4) return;  // bad-read/done state — only the action button responds
+        int rx, ry;
+        _touch->readRaw(&rx, &ry);
+        _touchCalRawX[_touchCalStep] = rx;
+        _touchCalRawY[_touchCalStep] = ry;
+        _touchCalStep++;
+        if (_touchCalStep < 4) {
+            _updateTouchCalStepUI();
+        } else {
+            _finishTouchCal();
+        }
+    }
+
+    void _finishTouchCal() {
+        int xMin = _touchCalRawX[0], xMax = _touchCalRawX[0];
+        int yMin = _touchCalRawY[0], yMax = _touchCalRawY[0];
+        for (int i = 1; i < 4; i++) {
+            xMin = std::min(xMin, _touchCalRawX[i]);
+            xMax = std::max(xMax, _touchCalRawX[i]);
+            yMin = std::min(yMin, _touchCalRawY[i]);
+            yMax = std::max(yMax, _touchCalRawY[i]);
+        }
+
+        lv_obj_add_flag(_touchCalTarget, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(_touchCalStepLabel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(_touchCalResultLabel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(_touchCalActionBtn, LV_OBJ_FLAG_HIDDEN);
+
+        // Same "bad reads" rejection threshold as the Pi build's TouchCalScreen.
+        if (xMax - xMin < 200 || yMax - yMin < 200) {
+            _touchCalBad = true;
+            lv_label_set_text(_touchCalResultLabel, "Bad reads -- try again");
+            lv_obj_set_style_text_color(_touchCalResultLabel, theme::danger(), 0);
+            lv_label_set_text(_touchCalActionLabel, "Retry");
+            return;
+        }
+
+        _touchCalBad = false;
+        _settings->setTouchCal(xMin, xMax, yMin, yMax);
+        _touch->setCalibration(xMin, xMax, yMin, yMax);
+        lv_label_set_text(_touchCalResultLabel, "Calibration saved!");
+        lv_obj_set_style_text_color(_touchCalResultLabel, theme::success(), 0);
+        lv_label_set_text(_touchCalActionLabel, "Done");
+    }
+
+    void _onTouchCalAction() {
+        if (_touchCalBad) {
+            _touchCalStep = 0;
+            lv_obj_add_flag(_touchCalResultLabel, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(_touchCalActionBtn, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(_touchCalTarget, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(_touchCalStepLabel, LV_OBJ_FLAG_HIDDEN);
+            _updateTouchCalStepUI();
+        } else {
+            lv_scr_load(_settingsScreen);
+        }
     }
 
     // ── OTA ───────────────────────────────────────────────────────────────

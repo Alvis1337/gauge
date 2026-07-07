@@ -376,7 +376,7 @@ void setup() {
 
     build_gauge_screen();
 
-    gSettingsUi.init(&gSettings, &gWifi);
+    gSettingsUi.init(&gSettings, &gWifi, &gTouch);
     gSettingsUi.setHomeScreen(gGaugeScreen);
 
     xTaskCreatePinnedToCore(obd_task, "obd_task", 8192, nullptr, 1, nullptr, 0);

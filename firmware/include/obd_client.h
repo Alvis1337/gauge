@@ -94,7 +94,17 @@ private:
         }
         uint8_t buf[256];
         size_t n = _transport.recvUntil('>', buf, sizeof(buf), timeout_ms);
-        if (n == 0) return false;
+        if (n == 0) {
+            // A dropped BLE link (adapter out of range, powered off) shows
+            // up here as a recv timeout, not a send failure — writeValue()
+            // can succeed against a connection NimBLE hasn't fully torn
+            // down yet. Without this check, `connected` would stay true
+            // forever once that happens: poll() keeps returning all-NaN
+            // data every cycle and obd_task's `while (client.connected)`
+            // loop never exits to retry/rediscover the adapter.
+            if (!_transport.connected()) connected = false;
+            return false;
+        }
         out.assign((const char *)buf, n);
         return true;
     }
