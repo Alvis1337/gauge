@@ -27,7 +27,7 @@ public:
     static constexpr uint8_t CMD_Z2 = 0xC0;
 
     static constexpr int PRESSURE_THRESHOLD  = 200;
-    static constexpr int POSITION_SAMPLES     = 5;
+    static constexpr int POSITION_SAMPLES     = 3;
 
     XPT2046Driver(int pin_cs, SPIClass &spi) : _cs(pin_cs), _spi(spi) {}
 

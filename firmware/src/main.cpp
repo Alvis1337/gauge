@@ -413,9 +413,15 @@ void setup() {
 }
 
 void loop() {
+    uint32_t frame_start = millis();
     lv_timer_handler();
     update_gauge_screen();
     gSettingsUi.poll();
     serial_console_poll();
-    delay(16);  // ~60fps UI refresh; BLE polling runs independently on core 0
+    // Target ~16ms per frame without adding 16ms on top of however long
+    // lv_timer_handler() took. If a flush ran long we go immediately;
+    // if it was fast we sleep the remainder. Keeps touch poll rate at
+    // ~60Hz rather than (60Hz minus render time).
+    int32_t remaining = 16 - (int32_t)(millis() - frame_start);
+    if (remaining > 1) delay(remaining);
 }
