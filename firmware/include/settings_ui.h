@@ -67,20 +67,23 @@ public:
         portEXIT_CRITICAL(&_mux);
 
         if (scanDirty) {
+            std::vector<WifiScanResult> results;
             portENTER_CRITICAL(&_mux);
-            std::vector<WifiScanResult> results = _scanResults;
+            results = std::move(_scanResults);
             portEXIT_CRITICAL(&_mux);
             _rebuildWifiList(results);
         }
         if (btScanDirty) {
+            std::vector<BtScanResult> results;
             portENTER_CRITICAL(&_mux);
-            std::vector<BtScanResult> results = _btScanResults;
+            results = std::move(_btScanResults);
             portEXIT_CRITICAL(&_mux);
             _rebuildObdList(results);
         }
         if (statusDirty) {
+            String status;
             portENTER_CRITICAL(&_mux);
-            String status = _statusText;
+            status = std::move(_statusText);
             portEXIT_CRITICAL(&_mux);
             lv_label_set_text(_otaStatusLabel, status.c_str());
             lv_label_set_text(_wifiPasswordStatus, status.c_str());
@@ -131,9 +134,9 @@ private:
     bool _statusDirty = false;
     String _pendingSsid;
 
-    void _setStatus(const String &s) {
+    void _setStatus(String s) {
         portENTER_CRITICAL(&_mux);
-        _statusText = s;
+        _statusText = std::move(s);
         _statusDirty = true;
         portEXIT_CRITICAL(&_mux);
     }
@@ -299,8 +302,9 @@ private:
             auto *self = (SettingsUI *)arg;
             self->_wifi->begin();
             auto results = self->_wifi->scan();
+            self->_wifi->end();  // give the radio back to BLE; connect() calls begin() again
             portENTER_CRITICAL(&self->_mux);
-            self->_scanResults = results;
+            self->_scanResults = std::move(results);
             self->_scanDirty = true;
             portEXIT_CRITICAL(&self->_mux);
             vTaskDelete(nullptr);
@@ -639,7 +643,7 @@ private:
             auto *self = (SettingsUI *)arg;
             auto results = bt_discovery::scan();
             portENTER_CRITICAL(&self->_mux);
-            self->_btScanResults = results;
+            self->_btScanResults = std::move(results);
             self->_btScanDirty = true;
             portEXIT_CRITICAL(&self->_mux);
             vTaskDelete(nullptr);

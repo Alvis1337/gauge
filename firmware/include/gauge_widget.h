@@ -1,6 +1,6 @@
 // A single arc-style gauge: colored value arc + big numeric readout +
 // small label underneath. Four of these make up the main screen (boost,
-// RPM, coolant, oil), replacing the Pi build's flat pygame rectangles
+// ethanol, coolant, oil), replacing the Pi build's flat pygame rectangles
 // with real anti-aliased arcs and a proper dark theme.
 #pragma once
 #include <lvgl.h>

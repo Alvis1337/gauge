@@ -11,10 +11,8 @@
 
 struct GaugeData {
     float boost_psi  = NAN;
-    float rpm        = NAN;
     float coolant_c  = NAN;
     float oil_temp_c = NAN;
-    float throttle   = NAN;
     float ethanol    = NAN;
 };
 
@@ -56,7 +54,6 @@ public:
             data.boost_psi = (map_kpa - baro_kpa) * 0.145038f;
         }
         data.coolant_c = _query("0105", parsers::parseCoolant);
-        data.throttle  = _query("0111", parsers::parseThrottle);
 
         // Mode 22 (manufacturer-specific): shorter timeout, skip after
         // SKIP_AFTER_FAILURES consecutive NANs so an unsupported PID
