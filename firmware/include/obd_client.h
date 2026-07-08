@@ -20,17 +20,20 @@ struct GaugeData {
 
 class ObdClient {
 public:
-    static constexpr uint32_t DEFAULT_TIMEOUT_MS = 3000;
-    // ATZ triggers a full ELM327 chip reset, which needs real recovery
-    // time — a shorter timeout here caused ATZ (and then ATE0, still
-    // waiting on the reboot) to time out with the adapter's real replies
-    // arriving late and desyncing everything that followed (same failure
-    // mode hit during the Python bring-up on this exact hardware).
-    static constexpr uint32_t ATZ_TIMEOUT_MS = 5000;
+    static constexpr uint32_t DEFAULT_TIMEOUT_MS  = 1500;
+    static constexpr uint32_t ATZ_TIMEOUT_MS      = 5000;
+    // Mode 22 PIDs are manufacturer-specific and many cars don't support
+    // them. A short timeout limits how long an unsupported PID stalls the
+    // poll cycle; after SKIP_AFTER_FAILURES consecutive NAN returns the
+    // PID is dropped entirely until the next connect().
+    static constexpr uint32_t MODE22_TIMEOUT_MS   = 800;
+    static constexpr int      SKIP_AFTER_FAILURES = 3;
 
     bool connected = false;
 
     bool connect(const std::string &address) {
+        _oilTempFails = 0;
+        _ethanolFails = 0;
         if (!_transport.connect(address, DEFAULT_TIMEOUT_MS)) return false;
         if (!_initElm()) {
             _transport.close();
@@ -52,15 +55,27 @@ public:
         if (!isnan(map_kpa) && !isnan(baro_kpa)) {
             data.boost_psi = (map_kpa - baro_kpa) * 0.145038f;
         }
-        data.coolant_c  = _query("0105", parsers::parseCoolant);
-        data.oil_temp_c = _query("224402", parsers::parseOilTemp4402);
-        data.throttle   = _query("0111", parsers::parseThrottle);
-        data.ethanol    = _query("224010", parsers::parseEthanol);
+        data.coolant_c = _query("0105", parsers::parseCoolant);
+        data.throttle  = _query("0111", parsers::parseThrottle);
+
+        // Mode 22 (manufacturer-specific): shorter timeout, skip after
+        // SKIP_AFTER_FAILURES consecutive NANs so an unsupported PID
+        // doesn't stall the entire poll cycle every lap.
+        if (_oilTempFails < SKIP_AFTER_FAILURES) {
+            data.oil_temp_c = _query("224402", parsers::parseOilTemp4402, MODE22_TIMEOUT_MS);
+            if (isnan(data.oil_temp_c)) ++_oilTempFails; else _oilTempFails = 0;
+        }
+        if (_ethanolFails < SKIP_AFTER_FAILURES) {
+            data.ethanol = _query("224010", parsers::parseEthanol, MODE22_TIMEOUT_MS);
+            if (isnan(data.ethanol)) ++_ethanolFails; else _ethanolFails = 0;
+        }
         return data;
     }
 
 private:
     BleTransport _transport;
+    int _oilTempFails = 0;
+    int _ethanolFails = 0;
 
     bool _initElm() {
         struct InitCmd { const char *cmd; uint32_t timeout_ms; uint32_t delay_ms; };
@@ -77,9 +92,10 @@ private:
         return true;
     }
 
-    float _query(const char *cmd, float (*parser)(const std::string &)) {
+    float _query(const char *cmd, float (*parser)(const std::string &),
+                 uint32_t timeout_ms = DEFAULT_TIMEOUT_MS) {
         std::string raw;
-        if (!_sendRaw(cmd, DEFAULT_TIMEOUT_MS, raw)) return NAN;
+        if (!_sendRaw(cmd, timeout_ms, raw)) return NAN;
         std::string payload = _extractPayload(raw, cmd);
         if (payload.empty()) return NAN;
         return parser(payload);

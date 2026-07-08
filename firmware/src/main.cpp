@@ -317,18 +317,14 @@ static void serial_console_poll() {
         } else if (line == "reboot") {
             ESP.restart();
         } else if (line == "touch") {
-            Serial.println("raw touch for 5s (tap the panel now)...");
-            Serial.println("  format: raw_x raw_y z1 z2 pressure(z1-z2+4095)");
-            uint32_t until = millis() + 5000;
-            while (millis() < until) {
-                int rx, ry, z1, z2;
-                gTouch.readDiag(&rx, &ry, &z1, &z2);
-                int pressure = z1 > 0 ? (z1 - z2 + 4095) : 0;
-                Serial.printf("  x=%4d y=%4d  z1=%4d z2=%4d  pressure=%5d %s\n",
-                              rx, ry, z1, z2, pressure,
-                              pressure >= XPT2046Driver::PRESSURE_THRESHOLD ? "<-- TOUCH" : "");
-                delay(200);
-            }
+            // Single non-blocking sample — run this command repeatedly
+            // while pressing the panel; no blocking loop so the UI stays live.
+            int rx, ry, z1, z2;
+            gTouch.readDiag(&rx, &ry, &z1, &z2);
+            int pressure = z1 > 0 ? (z1 - z2 + 4095) : 0;
+            Serial.printf("touch: x=%4d y=%4d  z1=%4d z2=%4d  pressure=%5d %s\n",
+                          rx, ry, z1, z2, pressure,
+                          pressure >= XPT2046Driver::PRESSURE_THRESHOLD ? "<-- TOUCH" : "");
         } else if (line == "status") {
             Serial.printf("free heap: %u bytes\n", ESP.getFreeHeap());
             Serial.printf("wifi ssid: \"%s\"\n", gSettings.wifiSsid().c_str());
@@ -413,7 +409,7 @@ void setup() {
     gSettingsUi.init(&gSettings, &gWifi, &gTouch);
     gSettingsUi.setHomeScreen(gGaugeScreen);
 
-    xTaskCreatePinnedToCore(obd_task, "obd_task", 8192, nullptr, 1, nullptr, 0);
+    xTaskCreatePinnedToCore(obd_task, "obd_task", 12288, nullptr, 1, nullptr, 0);
 }
 
 void loop() {

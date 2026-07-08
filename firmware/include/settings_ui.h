@@ -304,7 +304,7 @@ private:
             self->_scanDirty = true;
             portEXIT_CRITICAL(&self->_mux);
             vTaskDelete(nullptr);
-        }, "wifi_scan", 4096, self, 1, nullptr);
+        }, "wifi_scan", 8192, self, 1, nullptr);
     }
 
     void _rebuildWifiList(const std::vector<WifiScanResult> &results) {
@@ -404,7 +404,7 @@ private:
             }
             delete ctx;
             vTaskDelete(nullptr);
-        }, "wifi_connect", 4096, ctx, 1, nullptr);
+        }, "wifi_connect", 8192, ctx, 1, nullptr);
     }
 
     // ── touch calibration screen ─────────────────────────────────────────
@@ -643,7 +643,7 @@ private:
             self->_btScanDirty = true;
             portEXIT_CRITICAL(&self->_mux);
             vTaskDelete(nullptr);
-        }, "obd_scan", 4096, self, 1, nullptr);
+        }, "obd_scan", 8192, self, 1, nullptr);
     }
 
     void _rebuildObdList(const std::vector<BtScanResult> &results) {
