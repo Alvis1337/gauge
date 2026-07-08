@@ -139,8 +139,9 @@ private:
     }
 
     void _refreshWifiStatusLabel() {
-        String text = _wifi->connected() ? ("WiFi: " + _wifi->currentSSID())
-                                          : (_settings->wifiSsid().empty() ? "WiFi: not configured" : "WiFi: not connected");
+        std::string ssid = _settings->wifiSsid();
+        String text = ssid.empty() ? "WiFi: not configured"
+                                   : ("WiFi: " + String(ssid.c_str()));
         lv_label_set_text(_wifiStatusLabel, text.c_str());
     }
 
