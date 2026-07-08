@@ -67,16 +67,16 @@ public:
         portEXIT_CRITICAL(&_mux);
 
         if (scanDirty) {
-            std::vector<WifiScanResult> results;
+            // Copy (not move) — click handlers index into _scanResults after
+            // the list is built, so _scanResults must stay populated.
             portENTER_CRITICAL(&_mux);
-            results = std::move(_scanResults);
+            std::vector<WifiScanResult> results = _scanResults;
             portEXIT_CRITICAL(&_mux);
             _rebuildWifiList(results);
         }
         if (btScanDirty) {
-            std::vector<BtScanResult> results;
             portENTER_CRITICAL(&_mux);
-            results = std::move(_btScanResults);
+            std::vector<BtScanResult> results = _btScanResults;
             portEXIT_CRITICAL(&_mux);
             _rebuildObdList(results);
         }
