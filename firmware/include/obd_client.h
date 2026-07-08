@@ -26,7 +26,7 @@ public:
     // them. A short timeout limits how long an unsupported PID stalls the
     // poll cycle; after SKIP_AFTER_FAILURES consecutive NAN returns the
     // PID is dropped entirely until the next connect().
-    static constexpr uint32_t MODE22_TIMEOUT_MS   = 800;
+    static constexpr uint32_t MODE22_TIMEOUT_MS   = 2000;
     static constexpr int      SKIP_AFTER_FAILURES = 3;
 
     bool connected = false;
