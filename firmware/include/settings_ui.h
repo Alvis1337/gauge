@@ -164,6 +164,10 @@ private:
         lv_obj_set_style_bg_color(_settingsScreen, lv_color_hex(0x111111), 0);
         lv_obj_set_style_pad_all(_settingsScreen, 12, 0);
         lv_obj_clear_flag(_settingsScreen, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_event_cb(_settingsScreen, [](lv_event_t *e) {
+            auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            self->_refreshWifiStatusLabel();
+        }, LV_EVENT_SCREEN_LOADED, this);
 
         lv_obj_t *title = lv_label_create(_settingsScreen);
         lv_label_set_text(title, "Settings");
@@ -376,6 +380,7 @@ private:
         lv_obj_t *kb = lv_keyboard_create(_wifiPasswordScreen);
         lv_keyboard_set_textarea(kb, _wifiPasswordTextarea);
         lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+        lv_obj_clear_flag(kb, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
     }
 
     void _startWifiConnect() {
