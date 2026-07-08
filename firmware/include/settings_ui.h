@@ -163,6 +163,7 @@ private:
         _settingsScreen = lv_obj_create(nullptr);
         lv_obj_set_style_bg_color(_settingsScreen, lv_color_hex(0x111111), 0);
         lv_obj_set_style_pad_all(_settingsScreen, 12, 0);
+        lv_obj_clear_flag(_settingsScreen, LV_OBJ_FLAG_SCROLLABLE);
 
         lv_obj_t *title = lv_label_create(_settingsScreen);
         lv_label_set_text(title, "Settings");
@@ -247,12 +248,14 @@ private:
         _wifiListScreen = lv_obj_create(nullptr);
         lv_obj_set_style_bg_color(_wifiListScreen, lv_color_hex(0x111111), 0);
         lv_obj_set_style_pad_all(_wifiListScreen, 8, 0);
+        lv_obj_clear_flag(_wifiListScreen, LV_OBJ_FLAG_SCROLLABLE);
 
         lv_obj_t *backBtn = lv_button_create(_wifiListScreen);
         lv_obj_set_size(backBtn, 70, 30);
         lv_obj_align(backBtn, LV_ALIGN_TOP_LEFT, 0, 0);
         lv_obj_add_event_cb(backBtn, [](lv_event_t *e) {
             auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            self->_refreshWifiStatusLabel();
             lv_scr_load(self->_settingsScreen);
         }, LV_EVENT_CLICKED, this);
         lv_obj_t *backLabel = lv_label_create(backBtn);
@@ -331,12 +334,14 @@ private:
         _wifiPasswordScreen = lv_obj_create(nullptr);
         lv_obj_set_style_bg_color(_wifiPasswordScreen, lv_color_hex(0x111111), 0);
         lv_obj_set_style_pad_all(_wifiPasswordScreen, 8, 0);
+        lv_obj_clear_flag(_wifiPasswordScreen, LV_OBJ_FLAG_SCROLLABLE);
 
         lv_obj_t *backBtn = lv_button_create(_wifiPasswordScreen);
         lv_obj_set_size(backBtn, 70, 30);
         lv_obj_align(backBtn, LV_ALIGN_TOP_LEFT, 0, 0);
         lv_obj_add_event_cb(backBtn, [](lv_event_t *e) {
             auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            self->_refreshWifiStatusLabel();
             lv_scr_load(self->_wifiListScreen);
         }, LV_EVENT_CLICKED, this);
         lv_obj_t *backLabel = lv_label_create(backBtn);
@@ -422,6 +427,7 @@ private:
         // below are absolute panel pixels, and any default content-area
         // inset would throw off where the crosshair actually lands.
         lv_obj_set_style_pad_all(_touchCalScreen, 0, 0);
+        lv_obj_clear_flag(_touchCalScreen, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(_touchCalScreen, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(_touchCalScreen, [](lv_event_t *e) {
             auto *self = (SettingsUI *)lv_event_get_user_data(e);
@@ -559,6 +565,7 @@ private:
         _obdScreen = lv_obj_create(nullptr);
         lv_obj_set_style_bg_color(_obdScreen, lv_color_hex(0x111111), 0);
         lv_obj_set_style_pad_all(_obdScreen, 8, 0);
+        lv_obj_clear_flag(_obdScreen, LV_OBJ_FLAG_SCROLLABLE);
 
         lv_obj_t *backBtn = lv_button_create(_obdScreen);
         lv_obj_set_size(backBtn, 70, 30);
@@ -692,6 +699,6 @@ private:
             self->_wifi->end();
             self->_setStatus(result == "up to date" ? "Already up to date" : "Update failed: " + result);
             vTaskDelete(nullptr);
-        }, "ota_check", 8192, self, 1, nullptr);
+        }, "ota_check", 16384, self, 1, nullptr);
     }
 };

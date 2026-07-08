@@ -264,10 +264,9 @@ static void try_auto_ota() {
     // inside checkAndUpdate().
     Serial.printf("update check: %s\n", result.c_str());
     gWifi.end();
-    if (result != "up to date") {
-        set_boot_status(("Update check failed: " + result).c_str());
-        delay(1500);  // let the message actually be readable before gauges take over
-    }
+    set_boot_status(result == "up to date" ? "Firmware up to date"
+                                            : ("Update failed: " + result).c_str());
+    delay(1500);
 }
 
 // Non-blocking USB-serial command console — lets WiFi/OTA/touch be tested
@@ -314,7 +313,7 @@ static void serial_console_poll() {
                 Serial.printf("ota result: %s\n", result.c_str());
                 gWifi.end();
                 vTaskDelete(nullptr);
-            }, "ota_cmd", 8192, nullptr, 1, nullptr);
+            }, "ota_cmd", 16384, nullptr, 1, nullptr);
         } else if (line == "reboot") {
             ESP.restart();
         } else if (line == "touch") {
