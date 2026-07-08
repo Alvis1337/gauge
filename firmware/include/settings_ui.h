@@ -263,6 +263,7 @@ private:
         lv_obj_align(backBtn, LV_ALIGN_TOP_LEFT, 0, 0);
         lv_obj_add_event_cb(backBtn, [](lv_event_t *e) {
             auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            self->_wifi->end();  // release radio back to BLE if scan left it in STA mode
             self->_refreshWifiStatusLabel();
             lv_scr_load(self->_settingsScreen);
         }, LV_EVENT_CLICKED, this);
@@ -302,7 +303,12 @@ private:
             auto *self = (SettingsUI *)arg;
             self->_wifi->begin();
             auto results = self->_wifi->scan();
-            self->_wifi->end();  // give the radio back to BLE; connect() calls begin() again
+            // end() is intentionally NOT called here — WiFi.mode(WIFI_OFF)
+            // immediately after scanNetworks() destabilises the driver and
+            // breaks the next scan. The radio is returned to BLE when the
+            // user either connects to a network (connect task calls end())
+            // or navigates back without picking one (settings screen load
+            // calls end() via LV_EVENT_SCREEN_LOADED).
             portENTER_CRITICAL(&self->_mux);
             self->_scanResults = std::move(results);
             self->_scanDirty = true;
