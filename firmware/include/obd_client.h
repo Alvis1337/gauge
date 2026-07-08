@@ -52,7 +52,6 @@ public:
         if (!isnan(map_kpa) && !isnan(baro_kpa)) {
             data.boost_psi = (map_kpa - baro_kpa) * 0.145038f;
         }
-        data.rpm        = _query("010C", parsers::parseRpm);
         data.coolant_c  = _query("0105", parsers::parseCoolant);
         data.oil_temp_c = _query("224402", parsers::parseOilTemp4402);
         data.throttle   = _query("0111", parsers::parseThrottle);

@@ -77,7 +77,7 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
 }
 
 // ── gauge screen ─────────────────────────────────────────────────────────────
-GaugeWidget gBoostGauge, gRpmGauge, gCoolantGauge, gOilGauge;
+GaugeWidget gBoostGauge, gEthanolGauge, gCoolantGauge, gOilGauge;
 lv_obj_t *gConnDot = nullptr;
 lv_obj_t *gGaugeScreen = nullptr;
 
@@ -141,10 +141,10 @@ static void build_gauge_screen() {
         return c;
     };
 
-    gBoostGauge.create(cell(0, 0), "BOOST",   -5.0f,   25.0f, theme::boost(),   "%.1f psi");
-    gRpmGauge.create(cell(1, 0),   "RPM",      0.0f, 8000.0f, theme::rpm(),     "%.0f");
+    gBoostGauge.create(cell(0, 0),   "BOOST",   -5.0f,  25.0f, theme::boost(),   "%.1f psi");
+    gEthanolGauge.create(cell(1, 0), "ETH %",   0.0f, 100.0f, theme::ethanol(), "%.0f%%");
     gCoolantGauge.create(cell(0, 1), "COOLANT", 40.0f, 130.0f, theme::coolant(), "%.0f C");
-    gOilGauge.create(cell(1, 1),   "OIL",      40.0f, 150.0f, theme::oil(),     "%.0f C");
+    gOilGauge.create(cell(1, 1),     "OIL",     40.0f, 150.0f, theme::oil(),     "%.0f C");
 
     // Small connection-state dot, top-right — green = connected, red = not.
     gConnDot = lv_obj_create(scr);
@@ -173,7 +173,7 @@ static void update_gauge_screen() {
     portEXIT_CRITICAL(&gShared.mux);
 
     gBoostGauge.setValue(d.boost_psi);
-    gRpmGauge.setValue(d.rpm);
+    gEthanolGauge.setValue(d.ethanol);
     gCoolantGauge.setValue(d.coolant_c);
     gOilGauge.setValue(d.oil_temp_c);
     lv_obj_set_style_bg_color(gConnDot, connected ? theme::success() : theme::danger(), 0);

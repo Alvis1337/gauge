@@ -196,7 +196,7 @@ private:
         lv_obj_t *otaBtn = lv_button_create(_settingsScreen);
         lv_obj_set_size(otaBtn, 456, 40);
         lv_obj_align(otaBtn, LV_ALIGN_TOP_MID, 0, 134);
-        lv_obj_set_style_bg_color(otaBtn, theme::rpm(), 0);
+        lv_obj_set_style_bg_color(otaBtn, theme::ethanol(), 0);
         lv_obj_add_event_cb(otaBtn, [](lv_event_t *e) {
             auto *self = (SettingsUI *)lv_event_get_user_data(e);
             self->_startOtaCheck();
@@ -452,7 +452,7 @@ private:
         lv_obj_clear_flag(_touchCalTarget, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_size(_touchCalTarget, 20, 20);
         lv_obj_set_style_radius(_touchCalTarget, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_color(_touchCalTarget, theme::rpm(), 0);
+        lv_obj_set_style_bg_color(_touchCalTarget, theme::ethanol(), 0);
         lv_obj_set_style_bg_opa(_touchCalTarget, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(_touchCalTarget, 2, 0);
         lv_obj_set_style_border_color(_touchCalTarget, lv_color_white(), 0);
