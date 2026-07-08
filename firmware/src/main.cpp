@@ -403,6 +403,10 @@ void setup() {
     lv_indev_t *indev = lv_indev_create();
     lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(indev, touch_read_cb);
+    // Resistive touch jitter easily exceeds the 10px default, causing LVGL
+    // to classify taps on scrollable list items as scroll gestures and
+    // suppress LV_EVENT_CLICKED. 30px requires deliberate drag movement.
+    lv_indev_set_scroll_limit(indev, 30);
 
     build_gauge_screen();
 

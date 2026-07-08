@@ -45,12 +45,15 @@ public:
         return out;
     }
 
-    bool connect(const String &ssid, const String &password, uint32_t timeout_ms = 15000) {
+    bool connect(const String &ssid, const String &password, uint32_t timeout_ms = 30000) {
+        Serial.printf("[wifi] connecting to \"%s\" (timeout %lums)...\n", ssid.c_str(), (unsigned long)timeout_ms);
         WiFi.begin(ssid.c_str(), password.c_str());
         uint32_t deadline = millis() + timeout_ms;
         while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
             delay(200);
         }
+        Serial.printf("[wifi] status after connect: %d (%s)\n", WiFi.status(),
+                      WiFi.status() == WL_CONNECTED ? "connected" : "failed");
         return WiFi.status() == WL_CONNECTED;
     }
 

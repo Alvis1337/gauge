@@ -330,10 +330,12 @@ private:
             lv_obj_set_user_data(btn, (void *)(intptr_t)i);
             lv_obj_add_event_cb(btn, [](lv_event_t *e) {
                 auto *self = (SettingsUI *)lv_event_get_user_data(e);
-                intptr_t idx = (intptr_t)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
+                intptr_t idx = (intptr_t)lv_obj_get_user_data((lv_obj_t *)lv_event_get_current_target(e));
                 portENTER_CRITICAL(&self->_mux);
                 String ssid = (size_t)idx < self->_scanResults.size() ? self->_scanResults[idx].ssid : "";
                 portEXIT_CRITICAL(&self->_mux);
+                Serial.printf("wifi tap: idx=%d ssid='%s' list_size=%u\n",
+                              (int)idx, ssid.c_str(), (unsigned)self->_scanResults.size());
                 if (ssid.isEmpty()) return;
                 self->_pendingSsid = ssid;
                 lv_label_set_text(self->_wifiPasswordTitle, ("Connect to: " + ssid).c_str());
@@ -689,32 +691,23 @@ private:
     }
 
     // ── OTA ───────────────────────────────────────────────────────────────
+    // Running OTA in-place while NimBLE is active fails: mbedTLS needs
+    // ~32KB heap for TLS buffers but NimBLE is already holding ~40KB.
+    // The boot-time try_auto_ota() runs before NimBLEDevice::init() and
+    // has plenty of heap — so "Check for Update" just reboots into it.
+    // The boot splash shows progress/result exactly as it does on a
+    // normal power-on update check.
     void _startOtaCheck() {
-        _setStatus("Connecting to WiFi...");
-        auto *self = this;
-        xTaskCreate([](void *arg) {
-            auto *self = (SettingsUI *)arg;
-            String ssid = self->_settings->wifiSsid().c_str();
-            String password = self->_settings->wifiPassword().c_str();
-            if (ssid.isEmpty()) {
-                self->_setStatus("No WiFi configured — set it up above first");
-                vTaskDelete(nullptr);
-                return;
-            }
-            self->_wifi->begin();
-            if (!self->_wifi->connect(ssid, password)) {
-                self->_wifi->end();
-                self->_setStatus("Could not reach WiFi \"" + ssid + "\"");
-                vTaskDelete(nullptr);
-                return;
-            }
-            self->_setStatus("Downloading update...");
-            String result = ota_updater::checkAndUpdate(*self->_settings);
-            // Only reached when there's nothing to flash — success path
-            // reboots from inside checkAndUpdate().
-            self->_wifi->end();
-            self->_setStatus(result == "up to date" ? "Already up to date" : "Update failed: " + result);
+        std::string ssid = _settings->wifiSsid();
+        if (ssid.empty()) {
+            _setStatus("No WiFi configured — set it up first");
+            return;
+        }
+        _setStatus("Rebooting to check for update...");
+        xTaskCreate([](void *) {
+            vTaskDelay(pdMS_TO_TICKS(1500));
+            ESP.restart();
             vTaskDelete(nullptr);
-        }, "ota_check", 16384, self, 1, nullptr);
+        }, "ota_reboot", 2048, nullptr, 1, nullptr);
     }
 };
