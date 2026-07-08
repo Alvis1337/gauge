@@ -490,7 +490,7 @@ private:
     void _onTouchCalTap() {
         if (_touchCalStep >= 4) return;  // bad-read/done state — only the action button responds
         int rx, ry;
-        _touch->readRaw(&rx, &ry);
+        _touch->lastRaw(&rx, &ry);
         _touchCalRawX[_touchCalStep] = rx;
         _touchCalRawY[_touchCalStep] = ry;
         _touchCalStep++;

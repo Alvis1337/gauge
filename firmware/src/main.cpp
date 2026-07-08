@@ -319,11 +319,15 @@ static void serial_console_poll() {
             ESP.restart();
         } else if (line == "touch") {
             Serial.println("raw touch for 5s (tap the panel now)...");
+            Serial.println("  format: raw_x raw_y z1 z2 pressure(z1-z2+4095)");
             uint32_t until = millis() + 5000;
             while (millis() < until) {
-                int rx, ry;
-                gTouch.readRaw(&rx, &ry);
-                Serial.printf("  raw x=%d y=%d\n", rx, ry);
+                int rx, ry, z1, z2;
+                gTouch.readDiag(&rx, &ry, &z1, &z2);
+                int pressure = z1 > 0 ? (z1 - z2 + 4095) : 0;
+                Serial.printf("  x=%4d y=%4d  z1=%4d z2=%4d  pressure=%5d %s\n",
+                              rx, ry, z1, z2, pressure,
+                              pressure >= XPT2046Driver::PRESSURE_THRESHOLD ? "<-- TOUCH" : "");
                 delay(200);
             }
         } else if (line == "status") {
@@ -334,8 +338,29 @@ static void serial_console_poll() {
             bool connected = gShared.connected;
             portEXIT_CRITICAL(&gShared.mux);
             Serial.printf("obd connected: %s\n", connected ? "yes" : "no");
+        } else if (line == "gpio") {
+            // Read GPIO19 (MISO) with pull-up enabled to see if something is
+            // actively driving it LOW, or if it's just floating.
+            pinMode(PIN_MISO, INPUT_PULLUP);
+            delayMicroseconds(100);
+            int miso_pu = digitalRead(PIN_MISO);
+            pinMode(PIN_MISO, INPUT_PULLDOWN);
+            delayMicroseconds(100);
+            int miso_pd = digitalRead(PIN_MISO);
+            Serial.printf("GPIO19 (MISO) with pull-up: %d  with pull-down: %d\n", miso_pu, miso_pd);
+            if (miso_pu == 0) Serial.println("  -> MISO is being driven LOW by something external");
+            else              Serial.println("  -> MISO is floating (nothing driving it)");
+            // Also pulse T_CS manually to verify GPIO27 toggles
+            pinMode(PIN_TOUCH_CS, OUTPUT);
+            digitalWrite(PIN_TOUCH_CS, LOW);
+            delayMicroseconds(10);
+            int miso_cs_low = digitalRead(PIN_MISO);
+            digitalWrite(PIN_TOUCH_CS, HIGH);
+            Serial.printf("GPIO19 while T_CS pulsed LOW: %d\n", miso_cs_low);
+            // Restore SPI MISO pin function
+            gSpi.begin(PIN_SCLK, PIN_MISO, PIN_MOSI, -1);
         } else if (!line.isEmpty()) {
-            Serial.println("commands: wifi <ssid> <password> | ota | reboot | touch | status");
+            Serial.println("commands: wifi <ssid> <password> | ota | reboot | touch | gpio | status");
         }
         line = "";
     }

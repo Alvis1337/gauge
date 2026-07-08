@@ -8,10 +8,10 @@
 //     button; every read is median-filtered over several samples, and the
 //     first sample after switching the ADC mux is discarded (hasn't
 //     settled yet).
-//   - press detection needs several consecutive above-threshold pressure
-//     reads spaced ~20ms apart, not just one, to reject noise as a false
-//     touch — the same 5-reads/20ms figures touch_debug.py (the Pi build's
-//     hand-calibration tool) actually proved necessary on this panel.
+//   - press detection uses a single pressure sample per LVGL callback
+//     invocation; LVGL's indev state machine handles continuity across
+//     frames (blocking inside the callback stalls lv_timer_handler and
+//     causes short taps to be dropped entirely).
 // No T_IRQ pin is wired — pressure is polled every frame instead, exactly
 // like the Pi build, which avoids needing an interrupt-capable GPIO.
 #pragma once
@@ -26,9 +26,7 @@ public:
     static constexpr uint8_t CMD_Z1 = 0xB0;
     static constexpr uint8_t CMD_Z2 = 0xC0;
 
-    static constexpr int PRESSURE_THRESHOLD  = 500;
-    static constexpr int PRESSURE_SAMPLES    = 5;
-    static constexpr int PRESSURE_SAMPLE_GAP_MS = 20;
+    static constexpr int PRESSURE_THRESHOLD  = 200;
     static constexpr int POSITION_SAMPLES     = 5;
 
     XPT2046Driver(int pin_cs, SPIClass &spi) : _cs(pin_cs), _spi(spi) {}
@@ -45,11 +43,12 @@ public:
 
     // Returns true and fills (px, py) in panel pixel coordinates if a real
     // press is detected right now; false otherwise (no touch / bounced noise).
+    // Single pressure sample only — this runs inside LVGL's indev callback,
+    // which must return immediately. LVGL's own state machine handles
+    // continuity (it re-calls us each frame); blocking here for multiple
+    // samples would stall lv_timer_handler and drop short taps entirely.
     bool read(int display_w, int display_h, int *px, int *py) {
-        for (int i = 0; i < PRESSURE_SAMPLES; i++) {
-            if (_pressure() < PRESSURE_THRESHOLD) return false;
-            if (i < PRESSURE_SAMPLES - 1) delay(PRESSURE_SAMPLE_GAP_MS);
-        }
+        if (_pressure() < PRESSURE_THRESHOLD) return false;
 
         int raw_x = _readAdcMedian(CMD_X, POSITION_SAMPLES);
         int raw_y = _readAdcMedian(CMD_Y, POSITION_SAMPLES);
@@ -58,14 +57,18 @@ public:
         int y_range = _y_max - _y_min;
         if (x_range == 0 || y_range == 0) return false;
 
-        // raw_Y -> screen X (horizontal), raw_X -> screen Y (vertical)
-        int x = (int)((raw_y - _y_min) / (float)y_range * display_w);
-        int y = (int)((raw_x - _x_min) / (float)x_range * display_h);
+        // raw_Y -> screen X (horizontal), raw_X -> screen Y (vertical);
+        // both axes are physically inverted on this panel so we mirror them.
+        int x = display_w  - 1 - (int)((raw_y - _y_min) / (float)y_range * display_w);
+        int y = display_h - 1 - (int)((raw_x - _x_min) / (float)x_range * display_h);
 
         // Hand-rolled clamp — std::clamp needs C++17, which this
         // toolchain's default standard doesn't enable.
         *px = x < 0 ? 0 : (x > display_w - 1 ? display_w - 1 : x);
         *py = y < 0 ? 0 : (y > display_h - 1 ? display_h - 1 : y);
+
+        _lastRawX = raw_x;
+        _lastRawY = raw_y;
         return true;
     }
 
@@ -75,13 +78,30 @@ public:
         *raw_y = _readAdcMedian(CMD_Y, POSITION_SAMPLES);
     }
 
+    // Last raw position recorded during a confirmed press — safer for
+    // calibration taps than a fresh read at finger-up (LV_EVENT_CLICKED),
+    // which often catches the ADC mid-release and returns garbage.
+    void lastRaw(int *raw_x, int *raw_y) const {
+        *raw_x = _lastRawX;
+        *raw_y = _lastRawY;
+    }
+
+    // All four ADC channels for serial diagnostics.
+    void readDiag(int *raw_x, int *raw_y, int *z1, int *z2) {
+        *raw_x = _readAdcMedian(CMD_X, POSITION_SAMPLES);
+        *raw_y = _readAdcMedian(CMD_Y, POSITION_SAMPLES);
+        *z1    = _readAdc(CMD_Z1);
+        *z2    = _readAdc(CMD_Z2);
+    }
+
 private:
     int _cs;
     SPIClass &_spi;
     int _x_min = 350, _x_max = 3800, _y_min = 350, _y_max = 3900;
+    int _lastRawX = 0, _lastRawY = 0;
 
     int _readAdc(uint8_t cmd) {
-        _spi.beginTransaction(SPISettings(2000000, MSBFIRST, SPI_MODE0));
+        _spi.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE3));
         digitalWrite(_cs, LOW);
         _spi.transfer(cmd);
         uint8_t hi = _spi.transfer(0);
