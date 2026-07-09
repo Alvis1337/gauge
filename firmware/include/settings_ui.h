@@ -75,6 +75,10 @@ public:
             std::vector<WifiScanResult> results = _scanResults;
             portEXIT_CRITICAL(&_mux);
             _rebuildWifiList(results);
+            // Free the WiFi driver heap (~30KB) now that the list is built.
+            // NimBLE already holds ~40KB; leaving WiFi alive starves LVGL's
+            // layer-compositing allocator and freezes the rendered list.
+            _wifi->end();
         }
         if (btScanDirty) {
             portENTER_CRITICAL(&_mux);
@@ -338,11 +342,10 @@ private:
             lv_obj_add_event_cb(btn, [](lv_event_t *e) {
                 auto *self = (SettingsUI *)lv_event_get_user_data(e);
                 intptr_t idx = (intptr_t)lv_obj_get_user_data((lv_obj_t *)lv_event_get_current_target(e));
-                portENTER_CRITICAL(&self->_mux);
-                String ssid = (size_t)idx < self->_scanResults.size() ? self->_scanResults[idx].ssid : "";
-                portEXIT_CRITICAL(&self->_mux);
-                Serial.printf("wifi tap: idx=%d ssid='%s' list_size=%u\n",
-                              (int)idx, ssid.c_str(), (unsigned)self->_scanResults.size());
+                // _scanResults is only written from the scan task (which is
+                // done by the time the user can tap a result), so no lock needed.
+                if ((size_t)idx >= self->_scanResults.size()) return;
+                String ssid = self->_scanResults[idx].ssid;
                 if (ssid.isEmpty()) return;
                 self->_pendingSsid = ssid;
                 lv_label_set_text(self->_wifiPasswordTitle, ("Connect to: " + ssid).c_str());
@@ -412,6 +415,7 @@ private:
         auto *ctx = new Ctx{this, ssid, password};
         xTaskCreate([](void *arg) {
             auto *ctx = (Ctx *)arg;
+            ctx->self->_wifi->begin();  // re-init WiFi (freed after scan to save heap)
             bool ok = ctx->self->_wifi->connect(ctx->ssid, ctx->password);
             if (ok) {
                 ctx->self->_settings->setWifiCredentials(ctx->ssid.c_str(), ctx->password.c_str());

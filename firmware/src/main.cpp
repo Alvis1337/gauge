@@ -58,10 +58,20 @@ static lv_color_t gDrawBuf2[DISPLAY_W * 16];
 static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
     uint32_t w = area->x2 - area->x1 + 1;
     uint32_t h = area->y2 - area->y1 + 1;
-    // LVGL gives native-endian RGB565; the panel wants big-endian over SPI.
     uint16_t *px = (uint16_t *)px_map;
     uint32_t count = w * h;
-    for (uint32_t i = 0; i < count; i++) px[i] = (px[i] >> 8) | (px[i] << 8);
+    // The ST7796 panel is configured with BGR pixel order (MADCTL 0x28) and
+    // display inversion ON (0x21). Combined, it renders LVGL's (R,G,B) as
+    // (255-B, 255-G, 255-R). Pre-compensate here — swap R5↔B5 and invert all
+    // channels — so every lv_color_hex() value in the app just works.
+    for (uint32_t i = 0; i < count; i++) {
+        uint16_t p  = px[i];
+        uint16_t r5 = (p >> 11) & 0x1F;
+        uint16_t g6 = (p >>  5) & 0x3F;
+        uint16_t b5 =  p        & 0x1F;
+        uint16_t c  = ((0x1F - b5) << 11) | ((0x3F - g6) << 5) | (0x1F - r5);
+        px[i] = (c >> 8) | (c << 8);  // big-endian for SPI
+    }
     gDisplay.blit(area->x1, area->y1, area->x2, area->y2, px, count);
     lv_display_flush_ready(disp);
 }
@@ -113,7 +123,7 @@ static void build_mode_select_screen() {
     lv_obj_set_style_pad_column(badge, 0, 0);
     lv_obj_align(badge, LV_ALIGN_TOP_MID, 0, 10);
 
-    const uint32_t kStripeColors[] = {0x1C69D4, 0x6B3FA0, 0xC00D0D};
+    const uint32_t kStripeColors[] = {0x1C69D4, 0x6B3FA0, 0xC00D0D};  // BMW blue / purple / red
     for (auto c : kStripeColors) {
         lv_obj_t *stripe = lv_obj_create(badge);
         lv_obj_remove_style_all(stripe);
@@ -123,12 +133,15 @@ static void build_mode_select_screen() {
         lv_obj_clear_flag(stripe, LV_OBJ_FLAG_SCROLLABLE);
     }
 
-    // "M" overlaid on the badge (sibling, renders on top due to creation order)
-    lv_obj_t *mLabel = lv_label_create(scr);
+    // "M" as a child of badge so it's clipped to the badge and positionally
+    // resolved correctly. LV_OBJ_FLAG_IGNORE_LAYOUT keeps it out of the flex
+    // flow; lv_obj_align(CENTER) centres it within the badge.
+    lv_obj_t *mLabel = lv_label_create(badge);
     lv_label_set_text(mLabel, "M");
     lv_obj_set_style_text_font(mLabel, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(mLabel, lv_color_white(), 0);
-    lv_obj_align_to(mLabel, badge, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_add_flag(mLabel, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_align(mLabel, LV_ALIGN_CENTER, 0, 0);
 
     lv_obj_t *title = lv_label_create(scr);
     lv_label_set_text(title, "AutoGauge");
@@ -239,7 +252,12 @@ static void obd_task(void *) {
 
     for (;;) {
         std::string address = gSettings.obdBtAddress();
-        if (address.empty() || !client.connect(address)) {
+        if (address.empty()) {
+            obd_log::write("[obd] no address set");
+            vTaskDelay(pdMS_TO_TICKS(5000));
+            continue;
+        }
+        if (!client.connect(address)) {
             consecutive_failures++;
             portENTER_CRITICAL(&gShared.mux);
             gShared.connected = false;
@@ -391,6 +409,8 @@ void setup() {
     Serial.printf("AutoGauge starting, free heap: %u bytes\n", ESP.getFreeHeap());
 
     gSettings.load();
+    if (gSettings.logWebhookUrl().empty())
+        gSettings.setLogWebhookUrl("https://discord.com/api/webhooks/1524869724142305490/EDuWGfecJfPCoYQpxRJ3aehDLM8VRSab0b_k_WZGQDbjT2u5unWS5Eoy4vUpu8MsDT3x");
     gTouch.setCalibration(gSettings.touchXMin(), gSettings.touchXMax(),
                            gSettings.touchYMin(), gSettings.touchYMax());
 

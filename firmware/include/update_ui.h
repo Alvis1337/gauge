@@ -127,6 +127,7 @@ private:
         _uploadBtn = lv_button_create(_mainScreen);
         lv_obj_set_size(_uploadBtn, 456, 44);
         lv_obj_align(_uploadBtn, LV_ALIGN_TOP_MID, 0, 140);
+        lv_obj_set_style_bg_color(_uploadBtn, lv_color_hex(0x2a5caa), 0);
         lv_obj_add_event_cb(_uploadBtn, [](lv_event_t *e) {
             ((UpdateUI *)lv_event_get_user_data(e))->_startUpload();
         }, LV_EVENT_CLICKED, this);

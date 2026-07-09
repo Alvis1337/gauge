@@ -33,17 +33,25 @@ public:
     bool connect(const std::string &address) {
         _oilTempFails = 0;
         _ethanolFails = 0;
-        if (!_transport.connect(address, DEFAULT_TIMEOUT_MS)) return false;
+        obd_log::write("[try] %s", address.c_str());
+        if (!_transport.connect(address, DEFAULT_TIMEOUT_MS)) {
+            obd_log::write("[fail] BLE connect");
+            return false;
+        }
+        obd_log::write("[ble] connected, init ELM...");
         if (!_initElm()) {
+            obd_log::write("[fail] ELM init");
             _transport.close();
             return false;
         }
         connected = true;
+        obd_log::write("[conn] OK %s", address.c_str());
         return true;
     }
 
     void disconnect() {
         connected = false;
+        obd_log::write("[disc]");
         _transport.close();
     }
 
@@ -51,17 +59,12 @@ public:
         GaugeData data;
         float map_kpa  = _query("010B", parsers::parseKpa);
         float baro_kpa = _query("0133", parsers::parseKpa);
-        // 0133 (baro) is optional in OBD-II — many cars don't support it.
-        // Fall back to standard atmosphere so boost still reads correctly.
-        if (isnan(baro_kpa)) baro_kpa = 101.325f;
-        if (!isnan(map_kpa)) {
+        bool  baro_fallback = isnan(baro_kpa);
+        if (baro_fallback) baro_kpa = 101.325f;
+        if (!isnan(map_kpa))
             data.boost_psi = (map_kpa - baro_kpa) * 0.145038f;
-        }
         data.coolant_c = _query("0105", parsers::parseCoolant);
 
-        // Mode 22 (manufacturer-specific): shorter timeout, skip after
-        // SKIP_AFTER_FAILURES consecutive NANs so an unsupported PID
-        // doesn't stall the entire poll cycle every lap.
         if (_oilTempFails < SKIP_AFTER_FAILURES) {
             data.oil_temp_c = _query("224402", parsers::parseOilTemp4402, MODE22_TIMEOUT_MS);
             if (isnan(data.oil_temp_c)) ++_oilTempFails; else _oilTempFails = 0;
@@ -70,6 +73,19 @@ public:
             data.ethanol = _query("224010", parsers::parseEthanol, MODE22_TIMEOUT_MS);
             if (isnan(data.ethanol)) ++_ethanolFails; else _ethanolFails = 0;
         }
+
+        // One summary line per poll — decoded values at a glance.
+        char bstr[8], estr[8], cstr[8], ostr[8];
+        if (isnan(data.boost_psi))  snprintf(bstr, sizeof(bstr), "--");
+        else                        snprintf(bstr, sizeof(bstr), "%.1f", data.boost_psi);
+        if (isnan(data.ethanol))    snprintf(estr, sizeof(estr), "--");
+        else                        snprintf(estr, sizeof(estr), "%.0f%%", data.ethanol);
+        if (isnan(data.coolant_c))  snprintf(cstr, sizeof(cstr), "--");
+        else                        snprintf(cstr, sizeof(cstr), "%.0fC", data.coolant_c);
+        if (isnan(data.oil_temp_c)) snprintf(ostr, sizeof(ostr), "--");
+        else                        snprintf(ostr, sizeof(ostr), "%.0fC", data.oil_temp_c);
+        obd_log::write("[poll] B=%s E=%s C=%s O=%s%s",
+                       bstr, estr, cstr, ostr, baro_fallback ? " baro~" : "");
         return data;
     }
 
@@ -87,7 +103,11 @@ private:
         };
         for (auto &c : cmds) {
             std::string resp;
-            if (!_sendRaw(c.cmd, c.timeout_ms, resp)) return false;
+            if (!_sendRaw(c.cmd, c.timeout_ms, resp)) {
+                obd_log::write("[fail] AT cmd: %s", c.cmd);
+                return false;
+            }
+            obd_log::write("[at] %s -> ok", c.cmd);
             if (c.delay_ms) delay(c.delay_ms);
         }
         return true;

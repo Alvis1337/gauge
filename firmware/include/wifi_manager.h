@@ -32,16 +32,24 @@ public:
     }
 
     std::vector<WifiScanResult> scan(uint8_t max_results = 8) {
-        int n = WiFi.scanNetworks();
+        // Async scan so we can impose a hard timeout. scanNetworks(blocking)
+        // can stall indefinitely when NimBLE holds the coexistence arbiter.
+        WiFi.scanNetworks(/*async=*/true);
+        uint32_t deadline = millis() + 12000;
+        while (WiFi.scanComplete() == WIFI_SCAN_RUNNING && millis() < deadline)
+            delay(200);
+
+        int n = WiFi.scanComplete();
         std::vector<WifiScanResult> out;
-        for (int i = 0; i < n; i++) {
-            out.push_back({WiFi.SSID(i), WiFi.RSSI(i)});
+        if (n > 0) {
+            for (int i = 0; i < n; i++)
+                out.push_back({WiFi.SSID(i), WiFi.RSSI(i)});
+            std::sort(out.begin(), out.end(), [](const WifiScanResult &a, const WifiScanResult &b) {
+                return a.rssi > b.rssi;
+            });
+            WiFi.scanDelete();
+            if (out.size() > max_results) out.resize(max_results);
         }
-        std::sort(out.begin(), out.end(), [](const WifiScanResult &a, const WifiScanResult &b) {
-            return a.rssi > b.rssi;
-        });
-        WiFi.scanDelete();
-        if (out.size() > max_results) out.resize(max_results);
         return out;
     }
 

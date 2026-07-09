@@ -8,7 +8,7 @@
 
 namespace obd_log {
 
-static constexpr size_t LINES    = 14;
+static constexpr size_t LINES    = 20;
 static constexpr size_t LINE_LEN = 64;
 
 struct State {
