@@ -15,6 +15,7 @@
 #include "theme.h"
 #include "wifi_manager.h"
 #include "ota_updater.h"
+#include "update_ui.h"
 #include "settings_ui.h"
 
 // ── pin map (see wiring table) ──────────────────────────────────────────────
@@ -81,36 +82,87 @@ GaugeWidget gBoostGauge, gEthanolGauge, gCoolantGauge, gOilGauge;
 lv_obj_t *gConnDot = nullptr;
 lv_obj_t *gGaugeScreen = nullptr;
 
-// ── boot splash ──────────────────────────────────────────────────────────────
-// try_auto_ota() runs synchronously in setup(), before build_gauge_screen()
-// exists — without this, the panel just sits there showing nothing (or
-// whatever garbage was left in the display's RAM) for however long the WiFi
-// connect timeout + download takes. gBootLabel gets updated at each stage so
-// the user knows the board hasn't hung.
-lv_obj_t *gBootLabel = nullptr;
+// ── boot splash / mode select ─────────────────────────────────────────────────
+// Shows the M logo with a 5-second countdown to Gauge Mode. The user can tap
+// "Update / Upload Logs" to enter Update Mode (WiFi, OTA, log upload) instead.
+// WiFi and BLE are never active at the same time — mode selection makes the
+// boundary explicit.
+lv_obj_t *gBootLabel = nullptr;  // status text below the logo (reused in gauge build)
 
-static void build_boot_screen() {
+static bool gModeSelected     = false;
+static bool gUpdateModeChosen = false;
+static lv_obj_t *gCountdownLabel = nullptr;
+
+static void build_mode_select_screen() {
     lv_obj_t *scr = lv_scr_act();
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x111111), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(scr, 10, 0);
+    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+
+    // ── BMW M badge: three colored vertical stripes clipped to rounded rect ──
+    lv_obj_t *badge = lv_obj_create(scr);
+    lv_obj_set_size(badge, 126, 60);
+    lv_obj_remove_style_all(badge);
+    lv_obj_set_style_radius(badge, 6, 0);
+    lv_obj_set_style_clip_corner(badge, true, 0);
+    lv_obj_clear_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_layout(badge, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(badge, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_all(badge, 0, 0);
+    lv_obj_set_style_pad_column(badge, 0, 0);
+    lv_obj_align(badge, LV_ALIGN_TOP_MID, 0, 10);
+
+    const uint32_t kStripeColors[] = {0x1C69D4, 0x6B3FA0, 0xC00D0D};
+    for (auto c : kStripeColors) {
+        lv_obj_t *stripe = lv_obj_create(badge);
+        lv_obj_remove_style_all(stripe);
+        lv_obj_set_size(stripe, 42, 60);
+        lv_obj_set_style_bg_color(stripe, lv_color_hex(c), 0);
+        lv_obj_set_style_bg_opa(stripe, LV_OPA_COVER, 0);
+        lv_obj_clear_flag(stripe, LV_OBJ_FLAG_SCROLLABLE);
+    }
+
+    // "M" overlaid on the badge (sibling, renders on top due to creation order)
+    lv_obj_t *mLabel = lv_label_create(scr);
+    lv_label_set_text(mLabel, "M");
+    lv_obj_set_style_text_font(mLabel, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(mLabel, lv_color_white(), 0);
+    lv_obj_align_to(mLabel, badge, LV_ALIGN_CENTER, 0, 0);
 
     lv_obj_t *title = lv_label_create(scr);
     lv_label_set_text(title, "AutoGauge");
     lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
-    lv_obj_align(title, LV_ALIGN_CENTER, 0, -20);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 80);
 
     gBootLabel = lv_label_create(scr);
-    lv_label_set_text(gBootLabel, "Starting...");
+    lv_label_set_text(gBootLabel, "");
     lv_obj_set_style_text_color(gBootLabel, theme::subtext(), 0);
-    lv_obj_align(gBootLabel, LV_ALIGN_CENTER, 0, 20);
-}
+    lv_obj_set_style_text_font(gBootLabel, &lv_font_montserrat_14, 0);
+    lv_obj_align(gBootLabel, LV_ALIGN_TOP_MID, 0, 116);
 
-// Nothing else calls lv_timer_handler() while try_auto_ota() blocks in
-// setup(), so each status change has to flush itself to actually show up.
-static void set_boot_status(const char *text) {
-    if (!gBootLabel) return;
-    lv_label_set_text(gBootLabel, text);
-    lv_timer_handler();
+    // Mode buttons at the bottom
+    lv_obj_t *gaugeBtn = lv_button_create(scr);
+    lv_obj_set_size(gaugeBtn, 456, 50);
+    lv_obj_align(gaugeBtn, LV_ALIGN_BOTTOM_MID, 0, -54);
+    lv_obj_set_style_bg_color(gaugeBtn, theme::success(), 0);
+    lv_obj_add_event_cb(gaugeBtn, [](lv_event_t *) {
+        gModeSelected = true; gUpdateModeChosen = false;
+    }, LV_EVENT_CLICKED, nullptr);
+    gCountdownLabel = lv_label_create(gaugeBtn);
+    lv_label_set_text(gCountdownLabel, "Gauge Mode");
+    lv_obj_center(gCountdownLabel);
+
+    lv_obj_t *updateBtn = lv_button_create(scr);
+    lv_obj_set_size(updateBtn, 456, 44);
+    lv_obj_align(updateBtn, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_color(updateBtn, lv_color_hex(0x444444), 0);
+    lv_obj_add_event_cb(updateBtn, [](lv_event_t *) {
+        gModeSelected = true; gUpdateModeChosen = true;
+    }, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *updLabel = lv_label_create(updateBtn);
+    lv_label_set_text(updLabel, "Update / Upload Logs");
+    lv_obj_center(updLabel);
 }
 
 static void build_gauge_screen() {
@@ -237,38 +289,6 @@ static void obd_task(void *) {
     }
 }
 
-// Runs once at boot, before BLE init, so the whole check happens in a clean
-// WiFi-only window rather than fighting the OBD BLE link for radio time
-// (display/LVGL are already up by this point, purely so the boot splash
-// can show progress instead of a blank panel). Skips instantly if WiFi was
-// never configured; otherwise gives it a short, bounded timeout so a
-// missing hotspot (e.g. phone not tethered yet) doesn't meaningfully delay
-// the gauges coming up.
-static void try_auto_ota() {
-    std::string ssid = gSettings.wifiSsid();
-    if (ssid.empty()) return;
-
-    set_boot_status("Checking for update...");
-    Serial.println("checking for firmware update...");
-    gWifi.begin();
-    if (!gWifi.connect(ssid.c_str(), gSettings.wifiPassword().c_str(), /*timeout_ms=*/8000)) {
-        Serial.println("update check: WiFi unreachable, continuing boot");
-        set_boot_status("Update check: WiFi unreachable");
-        gWifi.end();
-        delay(1000);
-        return;
-    }
-    set_boot_status("Downloading update...");
-    String result = ota_updater::checkAndUpdate(gSettings);
-    // Only reached when there's nothing to flash — success reboots from
-    // inside checkAndUpdate().
-    Serial.printf("update check: %s\n", result.c_str());
-    gWifi.end();
-    set_boot_status(result == "up to date" ? "Firmware up to date"
-                                            : ("Update failed: " + result).c_str());
-    delay(1500);
-}
-
 // Non-blocking USB-serial command console — lets WiFi/OTA/touch be tested
 // and debugged without a working touchscreen (added while chasing the
 // touch wiring issue, but useful for headless bring-up generally).
@@ -325,6 +345,10 @@ static void serial_console_poll() {
             Serial.printf("touch: x=%4d y=%4d  z1=%4d z2=%4d  pressure=%5d %s\n",
                           rx, ry, z1, z2, pressure,
                           pressure >= XPT2046Driver::PRESSURE_THRESHOLD ? "<-- TOUCH" : "");
+        } else if (line.startsWith("webhook ")) {
+            std::string url = line.substring(8).c_str();
+            gSettings.setLogWebhookUrl(url);
+            Serial.printf("saved webhook URL: \"%s\"\n", url.c_str());
         } else if (line == "status") {
             Serial.printf("free heap: %u bytes\n", ESP.getFreeHeap());
             Serial.printf("wifi ssid: \"%s\"\n", gSettings.wifiSsid().c_str());
@@ -390,23 +414,37 @@ void setup() {
                                                /*dark=*/true, LV_FONT_DEFAULT);
     lv_display_set_theme(disp, theme);
 
-    // Display/LVGL are up now so try_auto_ota() (still called before BLE
-    // init, further down) has somewhere to show progress instead of the
-    // panel just sitting blank for however long WiFi connect + download take.
-    build_boot_screen();
-    lv_timer_handler();
-
-    try_auto_ota();
-
-    NimBLEDevice::init("AutoGauge");
-
+    // Touch input must be live before the mode-select screen so the user
+    // can tap a button during the 5-second countdown.
     lv_indev_t *indev = lv_indev_create();
     lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(indev, touch_read_cb);
-    // Resistive touch jitter easily exceeds the 10px default, causing LVGL
-    // to classify taps on scrollable list items as scroll gestures and
-    // suppress LV_EVENT_CLICKED. 30px requires deliberate drag movement.
     lv_indev_set_scroll_limit(indev, 30);
+
+    build_mode_select_screen();
+    lv_timer_handler();
+
+    // 5-second countdown to Gauge Mode; tap either button to choose immediately.
+    uint32_t deadline = millis() + 5000;
+    while (!gModeSelected && millis() < deadline) {
+        int secs = (int)((deadline - millis() + 999) / 1000);
+        char buf[32];
+        snprintf(buf, sizeof(buf), "Gauge Mode (%ds)", secs);
+        lv_label_set_text(gCountdownLabel, buf);
+        lv_timer_handler();
+        delay(50);
+    }
+
+    if (gUpdateModeChosen) {
+        // Update Mode: WiFi only, full heap, no BLE.
+        static UpdateUI updateUi;
+        updateUi.run(&gSettings, &gWifi);
+        ESP.restart();
+        return;
+    }
+
+    // ── Gauge Mode ────────────────────────────────────────────────────────
+    NimBLEDevice::init("AutoGauge");
 
     build_gauge_screen();
 

@@ -51,6 +51,10 @@ public:
     bool autoDiscoveryEnabled() { return _prefs.getBool("obd_auto_disc", true); }
     void setAutoDiscoveryEnabled(bool v) { _prefs.putBool("obd_auto_disc", v); }
 
+    // Webhook URL for log upload (Discord or any HTTP POST endpoint).
+    std::string logWebhookUrl() { return _prefs.getString("log_webhook", "").c_str(); }
+    void setLogWebhookUrl(const std::string &v) { _prefs.putString("log_webhook", v.c_str()); }
+
     // In-memory only (never persisted) — lets the settings UI tell
     // obd_task to retry right now after the address changes, instead of
     // waiting out whatever's left of the current backoff delay (up to

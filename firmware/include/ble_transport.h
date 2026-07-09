@@ -68,10 +68,15 @@ public:
     // Drains notify packets into `out` until `marker` byte shows up or
     // timeout elapses — the GATT equivalent of the old TCP path's
     // "while marker not in buf: buf += sock.recv()" loop.
+    //
+    // Scans each chunk's bytes individually so the marker is caught
+    // wherever it falls in the chunk, not just when it happens to be
+    // the very last byte received. Some BLE-serial bridges batch bytes
+    // and the '>' prompt can arrive mid-chunk with extra bytes after it.
     size_t recvUntil(uint8_t marker, uint8_t *out, size_t out_cap, uint32_t timeout_ms) {
         size_t total = 0;
         uint32_t deadline = millis() + timeout_ms;
-        while (total == 0 || out[total - 1] != marker) {
+        for (;;) {
             int32_t remaining = (int32_t)(deadline - millis());
             if (remaining <= 0) break;
             BleRxChunk chunk;
@@ -79,6 +84,9 @@ public:
             size_t n = chunk.len;
             if (total + n > out_cap) n = out_cap - total;
             memcpy(out + total, chunk.data, n);
+            for (size_t i = total; i < total + n; i++) {
+                if (out[i] == marker) return i + 1;
+            }
             total += n;
             if (total >= out_cap) break;
         }

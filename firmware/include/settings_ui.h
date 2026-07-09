@@ -18,6 +18,7 @@
 #include "ota_updater.h"
 #include "xpt2046_driver.h"
 #include "bt_discovery.h"
+#include "obd_log.h"
 #include "theme.h"
 
 class SettingsUI {
@@ -31,6 +32,7 @@ public:
         _buildWifiPasswordScreen();
         _buildTouchCalScreen();
         _buildObdScreen();
+        _buildObdLogScreen();
         _refreshObdStatusLabel();
     }
 
@@ -88,6 +90,9 @@ public:
             lv_label_set_text(_otaStatusLabel, status.c_str());
             lv_label_set_text(_wifiPasswordStatus, status.c_str());
         }
+        if (obd_log::isDirty() && _obdLogScreen && lv_scr_act() == _obdLogScreen) {
+            _refreshObdLog();
+        }
     }
 
 private:
@@ -100,6 +105,8 @@ private:
     lv_obj_t *_wifiPasswordScreen = nullptr;
     lv_obj_t *_touchCalScreen = nullptr;
     lv_obj_t *_obdScreen = nullptr;
+    lv_obj_t *_obdLogScreen = nullptr;
+    lv_obj_t *_obdLogLabel = nullptr;
 
     lv_obj_t *_wifiStatusLabel = nullptr;
     lv_obj_t *_otaStatusLabel = nullptr;
@@ -632,8 +639,21 @@ private:
         lv_obj_set_style_text_color(_obdListStatusLabel, theme::subtext(), 0);
         lv_obj_align(_obdListStatusLabel, LV_ALIGN_TOP_MID, 0, 88);
 
+        lv_obj_t *logBtn = lv_button_create(_obdScreen);
+        lv_obj_set_size(logBtn, 464, 30);
+        lv_obj_align(logBtn, LV_ALIGN_TOP_MID, 0, 108);
+        lv_obj_set_style_bg_color(logBtn, lv_color_hex(0x2a2a2a), 0);
+        lv_obj_add_event_cb(logBtn, [](lv_event_t *e) {
+            auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            self->_refreshObdLog();
+            lv_scr_load(self->_obdLogScreen);
+        }, LV_EVENT_CLICKED, this);
+        lv_obj_t *logBtnLabel = lv_label_create(logBtn);
+        lv_label_set_text(logBtnLabel, "View OBD Log");
+        lv_obj_center(logBtnLabel);
+
         _obdListContainer = lv_list_create(_obdScreen);
-        lv_obj_set_size(_obdListContainer, 464, 186);
+        lv_obj_set_size(_obdListContainer, 464, 152);
         lv_obj_align(_obdListContainer, LV_ALIGN_BOTTOM_MID, 0, 0);
     }
 
@@ -688,6 +708,62 @@ private:
                 lv_label_set_text(self->_obdListStatusLabel, "Saved -- reconnecting...");
             }, LV_EVENT_CLICKED, this);
         }
+    }
+
+    // ── OBD log screen ───────────────────────────────────────────────────
+    void _buildObdLogScreen() {
+        _obdLogScreen = lv_obj_create(nullptr);
+        lv_obj_set_style_bg_color(_obdLogScreen, lv_color_hex(0x111111), 0);
+        lv_obj_set_style_pad_all(_obdLogScreen, 8, 0);
+        lv_obj_clear_flag(_obdLogScreen, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_event_cb(_obdLogScreen, [](lv_event_t *e) {
+            auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            self->_refreshObdLog();
+        }, LV_EVENT_SCREEN_LOADED, this);
+
+        lv_obj_t *backBtn = lv_button_create(_obdLogScreen);
+        lv_obj_set_size(backBtn, 70, 30);
+        lv_obj_align(backBtn, LV_ALIGN_TOP_LEFT, 0, 0);
+        lv_obj_add_event_cb(backBtn, [](lv_event_t *e) {
+            auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            lv_scr_load(self->_obdScreen);
+        }, LV_EVENT_CLICKED, this);
+        lv_obj_t *backLabel = lv_label_create(backBtn);
+        lv_label_set_text(backLabel, "< Back");
+        lv_obj_center(backLabel);
+
+        lv_obj_t *title = lv_label_create(_obdLogScreen);
+        lv_label_set_text(title, "OBD Log");
+        lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 4);
+
+        lv_obj_t *scroll = lv_obj_create(_obdLogScreen);
+        lv_obj_set_size(scroll, 464, 258);
+        lv_obj_align(scroll, LV_ALIGN_BOTTOM_MID, 0, 0);
+        lv_obj_set_style_bg_color(scroll, lv_color_hex(0x1a1a1a), 0);
+        lv_obj_set_style_pad_all(scroll, 6, 0);
+        lv_obj_set_scroll_dir(scroll, LV_DIR_VER);
+
+        _obdLogLabel = lv_label_create(scroll);
+        lv_obj_set_style_text_font(_obdLogLabel, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(_obdLogLabel, lv_color_hex(0xc0c0c0), 0);
+        lv_obj_set_width(_obdLogLabel, lv_pct(100));
+        lv_label_set_long_mode(_obdLogLabel, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(_obdLogLabel, "No OBD activity yet");
+    }
+
+    void _refreshObdLog() {
+        if (!_obdLogLabel) return;
+        static char lines[obd_log::LINES][obd_log::LINE_LEN];
+        size_t n = obd_log::snapshot(lines, obd_log::LINES);
+        if (n == 0) { lv_label_set_text(_obdLogLabel, "No OBD activity yet"); return; }
+        String text;
+        text.reserve(n * obd_log::LINE_LEN);
+        for (size_t i = 0; i < n; i++) {
+            text += lines[i];
+            if (i + 1 < n) text += '\n';
+        }
+        lv_label_set_text(_obdLogLabel, text.c_str());
+        lv_obj_scroll_to_y(lv_obj_get_parent(_obdLogLabel), LV_COORD_MAX, LV_ANIM_OFF);
     }
 
     // ── OTA ───────────────────────────────────────────────────────────────

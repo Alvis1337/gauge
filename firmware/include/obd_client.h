@@ -7,6 +7,7 @@
 #include <cctype>
 #include <string>
 #include "ble_transport.h"
+#include "obd_log.h"
 #include "parsers.h"
 
 struct GaugeData {
@@ -50,7 +51,10 @@ public:
         GaugeData data;
         float map_kpa  = _query("010B", parsers::parseKpa);
         float baro_kpa = _query("0133", parsers::parseKpa);
-        if (!isnan(map_kpa) && !isnan(baro_kpa)) {
+        // 0133 (baro) is optional in OBD-II — many cars don't support it.
+        // Fall back to standard atmosphere so boost still reads correctly.
+        if (isnan(baro_kpa)) baro_kpa = 101.325f;
+        if (!isnan(map_kpa)) {
             data.boost_psi = (map_kpa - baro_kpa) * 0.145038f;
         }
         data.coolant_c = _query("0105", parsers::parseCoolant);
@@ -107,6 +111,7 @@ private:
         uint8_t buf[256];
         size_t n = _transport.recvUntil('>', buf, sizeof(buf), timeout_ms);
         if (n == 0) {
+            obd_log::write("[obd] %s -> timeout", cmd);
             // A dropped BLE link (adapter out of range, powered off) shows
             // up here as a recv timeout, not a send failure — writeValue()
             // can succeed against a connection NimBLE hasn't fully torn
@@ -118,6 +123,10 @@ private:
             return false;
         }
         out.assign((const char *)buf, n);
+        char preview[49] = {};
+        for (size_t i = 0, j = 0; i < n && j < 48; i++)
+            preview[j++] = (buf[i] >= 0x20 && buf[i] < 0x7f) ? buf[i] : '.';
+        obd_log::write("[obd] %s -> '%s'", cmd, preview);
         return true;
     }
 
