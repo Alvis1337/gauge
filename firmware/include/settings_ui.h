@@ -244,17 +244,6 @@ private:
         lv_obj_set_style_text_color(_otaStatusLabel, theme::subtext(), 0);
         lv_obj_align(_otaStatusLabel, LV_ALIGN_TOP_MID, 0, 226);
 
-        lv_obj_t *uploadBtn = lv_button_create(_settingsScreen);
-        lv_obj_set_size(uploadBtn, 456, 40);
-        lv_obj_align(uploadBtn, LV_ALIGN_BOTTOM_MID, 0, -48);
-        lv_obj_set_style_bg_color(uploadBtn, lv_color_hex(0x2a5caa), 0);
-        lv_obj_add_event_cb(uploadBtn, [](lv_event_t *) {
-            rebootToUpdateMode();
-        }, LV_EVENT_CLICKED, nullptr);
-        lv_obj_t *uploadBtnLabel = lv_label_create(uploadBtn);
-        lv_label_set_text(uploadBtnLabel, "Upload Log to Discord");
-        lv_obj_center(uploadBtnLabel);
-
         lv_obj_t *backBtn = lv_button_create(_settingsScreen);
         lv_obj_set_size(backBtn, 456, 44);
         lv_obj_align(backBtn, LV_ALIGN_BOTTOM_MID, 0, 0);
@@ -750,6 +739,17 @@ private:
         lv_obj_t *title = lv_label_create(_obdLogScreen);
         lv_label_set_text(title, "OBD Log");
         lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 4);
+
+        lv_obj_t *uploadBtn = lv_button_create(_obdLogScreen);
+        lv_obj_set_size(uploadBtn, 130, 30);
+        lv_obj_align(uploadBtn, LV_ALIGN_TOP_RIGHT, 0, 0);
+        lv_obj_set_style_bg_color(uploadBtn, lv_color_hex(0x2a5caa), 0);
+        lv_obj_add_event_cb(uploadBtn, [](lv_event_t *) {
+            rebootToUpdateMode();
+        }, LV_EVENT_CLICKED, nullptr);
+        lv_obj_t *uploadBtnLabel = lv_label_create(uploadBtn);
+        lv_label_set_text(uploadBtnLabel, "Upload to Discord");
+        lv_obj_center(uploadBtnLabel);
 
         lv_obj_t *scroll = lv_obj_create(_obdLogScreen);
         lv_obj_set_size(scroll, 464, 258);
