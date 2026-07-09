@@ -61,7 +61,7 @@ public:
         data.oil_temp_c = _query("015C", parsers::parseCoolant);  // Mode 01 standard oil temp
 
         if (_ethanolFails < SKIP_AFTER_FAILURES) {
-            data.ethanol = _query("224010", parsers::parseEthanol, MODE22_TIMEOUT_MS);
+            data.ethanol = _query("2244DE", parsers::parseEthanol, MODE22_TIMEOUT_MS);
             if (isnan(data.ethanol)) ++_ethanolFails; else _ethanolFails = 0;
         }
 
