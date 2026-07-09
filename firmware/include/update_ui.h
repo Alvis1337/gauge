@@ -229,17 +229,29 @@ private:
         auto *ctx = new Ctx{this};
         xTaskCreate([](void *arg) {
             auto *ctx = (Ctx *)arg;
+            obd_log::write("[upd] WiFi connecting...");
             ctx->self->_wifi->begin();
             bool ok = ctx->self->_wifi->connect(
                 ctx->self->_settings->wifiSsid().c_str(),
                 ctx->self->_settings->wifiPassword().c_str());
-            if (ok && ctx->self->_autoUpload) {
+            if (!ok) {
+                obd_log::write("[upd] WiFi failed");
+                ctx->self->_setStatus("WiFi connection failed");
+            } else if (ctx->self->_autoUpload) {
+                obd_log::write("[upd] WiFi ok, uploading...");
                 ctx->self->_setStatus("WiFi connected — uploading log...");
                 std::string url = ctx->self->_settings->logWebhookUrl();
                 String result = log_uploader::upload(url.c_str());
-                ctx->self->_setStatus(result.isEmpty() ? "Log uploaded!" : result);
+                if (result.isEmpty()) {
+                    obd_log::write("[upd] upload ok");
+                    ctx->self->_setStatus("Log uploaded!");
+                } else {
+                    obd_log::write("[upd] upload err: %s", result.c_str());
+                    ctx->self->_setStatus(result);
+                }
             } else {
-                ctx->self->_setStatus(ok ? "WiFi connected" : "WiFi connection failed");
+                obd_log::write("[upd] WiFi ok");
+                ctx->self->_setStatus("WiFi connected");
             }
             delete ctx;
             vTaskDelete(nullptr);
@@ -256,10 +268,12 @@ private:
         auto *ctx = new Ctx{this};
         xTaskCreate([](void *arg) {
             auto *ctx = (Ctx *)arg;
+            obd_log::write("[upd] OTA check starting");
             String result = ota_updater::checkAndUpdate(*ctx->self->_settings);
             // Only reached if no update (update reboots the device).
-            ctx->self->_setStatus(result == "up to date" ? "Firmware up to date"
-                                                          : "OTA: " + result);
+            bool upToDate = (result == "up to date");
+            obd_log::write("[upd] OTA: %s", result.c_str());
+            ctx->self->_setStatus(upToDate ? "Firmware up to date" : "OTA: " + result);
             delete ctx;
             vTaskDelete(nullptr);
         }, "upd_ota", 16384, ctx, 1, nullptr);
@@ -275,9 +289,16 @@ private:
         auto *ctx = new Ctx{this};
         xTaskCreate([](void *arg) {
             auto *ctx = (Ctx *)arg;
+            obd_log::write("[upd] manual upload...");
             std::string url = ctx->self->_settings->logWebhookUrl();
             String result = log_uploader::upload(url.c_str());
-            ctx->self->_setStatus(result.isEmpty() ? "Log uploaded!" : result);
+            if (result.isEmpty()) {
+                obd_log::write("[upd] upload ok");
+                ctx->self->_setStatus("Log uploaded!");
+            } else {
+                obd_log::write("[upd] upload err: %s", result.c_str());
+                ctx->self->_setStatus(result);
+            }
             delete ctx;
             vTaskDelete(nullptr);
         }, "upd_log", 16384, ctx, 1, nullptr);
