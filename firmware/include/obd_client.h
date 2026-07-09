@@ -97,7 +97,11 @@ private:
     bool _initElm() {
         struct InitCmd { const char *cmd; uint32_t timeout_ms; uint32_t delay_ms; };
         static const InitCmd cmds[] = {
-            {"ATZ", ATZ_TIMEOUT_MS, 2000}, {"ATE0", DEFAULT_TIMEOUT_MS, 0},
+            // ATWS = warm start: resets ELM state without dropping the BLE
+            // link. ATZ (full reset) causes Vgate iCar / iOS-Vlink to
+            // disconnect the BLE transport mid-reset, so we never see the
+            // response and the init fails. ATWS avoids that.
+            {"ATWS", ATZ_TIMEOUT_MS, 2000}, {"ATE0", DEFAULT_TIMEOUT_MS, 0},
             {"ATL0", DEFAULT_TIMEOUT_MS, 0}, {"ATS0", DEFAULT_TIMEOUT_MS, 0},
             {"ATSP0", DEFAULT_TIMEOUT_MS, 0}, {"ATH1", DEFAULT_TIMEOUT_MS, 0},
         };

@@ -32,7 +32,6 @@ inline String upload(const char *webhookUrl) {
 
     WiFiClientSecure client;
     client.setInsecure();
-    client.setTimeout(15);  // 15s TLS handshake timeout (seconds, not ms)
     HTTPClient https;
     https.setTimeout(15000);  // 15s HTTP response timeout (ms)
     if (!https.begin(client, webhookUrl)) return "HTTPS begin failed";
