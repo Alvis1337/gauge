@@ -63,9 +63,11 @@ public:
                        _writeChar->canWrite(), _writeChar->canWriteNoResponse(),
                        _notifyChar->canNotify(), _notifyChar->canIndicate());
 
-        // Some adapters (Vgate iCar / iOS-Vlink) use indicate rather than
-        // notify. subscribe(true) = notify, subscribe(false) = indicate.
-        // Try both; the first that succeeds is what the adapter supports.
+        // Enable BOTH notify (bit 0) and indicate (bit 1) on the CCCD so we
+        // catch responses regardless of which the adapter uses. Vgate iCar /
+        // iOS-Vlink sends the initial '>' prompt as notify but sends command
+        // responses (ATE0, ATH1, OBD replies) as indicate — subscribing to
+        // only one type silently drops the other.
         auto rxCb = [this](NimBLERemoteCharacteristic *, uint8_t *data, size_t len, bool) {
             BleRxChunk chunk;
             size_t n = len > sizeof(chunk.data) ? sizeof(chunk.data) : len;
@@ -73,9 +75,15 @@ public:
             chunk.len = n;
             xQueueSend(_rxQueue, &chunk, 0);
         };
+        // subscribe(true) registers the callback and writes 0x0001 to CCCD;
+        // then overwrite CCCD with 0x0003 to also arm the indicate bit.
         bool subOk = _notifyChar->subscribe(true, rxCb);
-        if (!subOk) subOk = _notifyChar->subscribe(false, rxCb);
-        obd_log::write("[ble] sub=%d", subOk);
+        auto *cccd = _notifyChar->getDescriptor(NimBLEUUID("2902"));
+        if (cccd) {
+            uint8_t both[2] = {0x03, 0x00};
+            cccd->writeValue(both, 2, true);
+        }
+        obd_log::write("[ble] sub=%d cccd=%d", subOk, cccd != nullptr);
 
         // Give the adapter ~500ms to settle after the GATT subscription
         // before the first AT command — Vgate/iOS-Vlink drops the initial
