@@ -106,10 +106,14 @@ static lv_obj_t *gCountdownLabel = nullptr;
 // Set from Settings UI "Upload Log to Discord" — survives ESP.restart()
 // so the next boot skips the countdown and enters Update Mode directly.
 RTC_DATA_ATTR static bool gRtcBootToUpdate;
+// Set alongside gRtcBootToUpdate so Update Mode knows to auto-upload the
+// log immediately after WiFi connects, without requiring a manual tap.
+RTC_DATA_ATTR static bool gRtcAutoUpload;
 
 // Called from Settings UI.
 void rebootToUpdateMode() {
     gRtcBootToUpdate = true;
+    gRtcAutoUpload   = true;
     ESP.restart();
 }
 
@@ -455,8 +459,11 @@ void setup() {
     lv_timer_handler();
 
     // "Reboot to Update Mode" from Settings sets this flag before restarting.
+    bool autoUpload = false;
     if (gRtcBootToUpdate) {
         gRtcBootToUpdate = false;
+        autoUpload = gRtcAutoUpload;
+        gRtcAutoUpload = false;
         gUpdateModeChosen = true;
     } else {
         // 5-second countdown to Gauge Mode; tap either button to choose immediately.
@@ -474,7 +481,7 @@ void setup() {
     if (gUpdateModeChosen) {
         // Update Mode: WiFi only, full heap, no BLE.
         static UpdateUI updateUi;
-        updateUi.run(&gSettings, &gWifi);
+        updateUi.run(&gSettings, &gWifi, autoUpload);
         ESP.restart();
         return;
     }

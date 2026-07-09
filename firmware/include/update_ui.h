@@ -14,10 +14,13 @@
 class UpdateUI {
 public:
     // Blocks until the user taps "Restart in Gauge Mode".
-    void run(GaugeSettings *settings, WifiManager *wifi) {
-        _settings = settings;
-        _wifi     = wifi;
-        _done     = false;
+    // Pass autoUpload=true (set when entering via "Upload to Discord" button)
+    // to trigger the log upload automatically once WiFi connects.
+    void run(GaugeSettings *settings, WifiManager *wifi, bool autoUpload = false) {
+        _settings    = settings;
+        _wifi        = wifi;
+        _done        = false;
+        _autoUpload  = autoUpload;
         _buildMainScreen();
         _buildWebhookScreen();
         lv_scr_load(_mainScreen);
@@ -33,9 +36,10 @@ public:
     }
 
 private:
-    GaugeSettings *_settings = nullptr;
-    WifiManager   *_wifi     = nullptr;
-    bool           _done     = false;
+    GaugeSettings *_settings    = nullptr;
+    WifiManager   *_wifi        = nullptr;
+    bool           _done        = false;
+    bool           _autoUpload  = false;
 
     portMUX_TYPE _mux        = portMUX_INITIALIZER_UNLOCKED;
     String       _statusText;
@@ -229,7 +233,14 @@ private:
             bool ok = ctx->self->_wifi->connect(
                 ctx->self->_settings->wifiSsid().c_str(),
                 ctx->self->_settings->wifiPassword().c_str());
-            ctx->self->_setStatus(ok ? "WiFi connected" : "WiFi connection failed");
+            if (ok && ctx->self->_autoUpload) {
+                ctx->self->_setStatus("WiFi connected — uploading log...");
+                std::string url = ctx->self->_settings->logWebhookUrl();
+                String result = log_uploader::upload(url.c_str());
+                ctx->self->_setStatus(result.isEmpty() ? "Log uploaded!" : result);
+            } else {
+                ctx->self->_setStatus(ok ? "WiFi connected" : "WiFi connection failed");
+            }
             delete ctx;
             vTaskDelete(nullptr);
         }, "upd_wifi", 8192, ctx, 1, nullptr);
