@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
+#include "obd_log.h"
 
 struct BleRxChunk {
     uint8_t data[247];  // >= max BLE 5 ATT MTU payload; oversized chunks are truncated, never overrun
@@ -56,6 +57,12 @@ public:
             return false;
         }
 
+        obd_log::write("[ble] tx=%s", _writeChar->getUUID().toString().c_str());
+        obd_log::write("[ble] rx=%s", _notifyChar->getUUID().toString().c_str());
+        obd_log::write("[ble] canWr=%d canWrNR=%d canNtf=%d canInd=%d",
+                       _writeChar->canWrite(), _writeChar->canWriteNoResponse(),
+                       _notifyChar->canNotify(), _notifyChar->canIndicate());
+
         // Some adapters (Vgate iCar / iOS-Vlink) use indicate rather than
         // notify. subscribe(true) = notify, subscribe(false) = indicate.
         // Try both; the first that succeeds is what the adapter supports.
@@ -66,20 +73,29 @@ public:
             chunk.len = n;
             xQueueSend(_rxQueue, &chunk, 0);
         };
-        if (!_notifyChar->subscribe(true, rxCb))
-            _notifyChar->subscribe(false, rxCb);
+        bool subOk = _notifyChar->subscribe(true, rxCb);
+        if (!subOk) subOk = _notifyChar->subscribe(false, rxCb);
+        obd_log::write("[ble] sub=%d", subOk);
 
         // Give the adapter ~500ms to settle after the GATT subscription
         // before the first AT command — Vgate/iOS-Vlink drops the initial
         // ATZ if sent immediately after connection.
         delay(500);
 
+        // Flush any unsolicited data the adapter sent on connect (e.g. a
+        // stale '>' prompt) so it doesn't confuse the first recvUntil().
+        BleRxChunk discard;
+        while (xQueueReceive(_rxQueue, &discard, 0) == pdTRUE) {}
+
         return true;
     }
 
     bool send(const uint8_t *data, size_t len) {
         if (!_writeChar) return false;
-        return _writeChar->writeValue(data, len, false);
+        // Use WriteWithResponse if the characteristic requires it; otherwise
+        // WriteWithoutResponse (faster, no ACK wait).
+        bool withResponse = !_writeChar->canWriteNoResponse();
+        return _writeChar->writeValue(data, len, withResponse);
     }
 
     // Drains notify packets into `out` until `marker` byte shows up or

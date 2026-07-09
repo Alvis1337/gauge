@@ -20,7 +20,7 @@ struct GaugeData {
 class ObdClient {
 public:
     static constexpr uint32_t DEFAULT_TIMEOUT_MS  = 1500;
-    static constexpr uint32_t ATZ_TIMEOUT_MS      = 5000;
+    static constexpr uint32_t ATZ_TIMEOUT_MS      = 8000;
     // Mode 22 PIDs are manufacturer-specific and many cars don't support
     // them. A short timeout limits how long an unsupported PID stalls the
     // poll cycle; after SKIP_AFTER_FAILURES consecutive NAN returns the
