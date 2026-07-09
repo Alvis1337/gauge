@@ -255,7 +255,7 @@ private:
             }
             delete ctx;
             vTaskDelete(nullptr);
-        }, "upd_wifi", 8192, ctx, 1, nullptr);
+        }, "upd_wifi", 24576, ctx, 1, nullptr);
     }
 
     void _startOta() {
@@ -301,6 +301,6 @@ private:
             }
             delete ctx;
             vTaskDelete(nullptr);
-        }, "upd_log", 16384, ctx, 1, nullptr);
+        }, "upd_log", 24576, ctx, 1, nullptr);
     }
 };
