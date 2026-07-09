@@ -56,13 +56,23 @@ public:
             return false;
         }
 
-        _notifyChar->subscribe(true, [this](NimBLERemoteCharacteristic *, uint8_t *data, size_t len, bool) {
+        // Some adapters (Vgate iCar / iOS-Vlink) use indicate rather than
+        // notify. subscribe(true) = notify, subscribe(false) = indicate.
+        // Try both; the first that succeeds is what the adapter supports.
+        auto rxCb = [this](NimBLERemoteCharacteristic *, uint8_t *data, size_t len, bool) {
             BleRxChunk chunk;
             size_t n = len > sizeof(chunk.data) ? sizeof(chunk.data) : len;
             memcpy(chunk.data, data, n);
             chunk.len = n;
             xQueueSend(_rxQueue, &chunk, 0);
-        });
+        };
+        if (!_notifyChar->subscribe(true, rxCb))
+            _notifyChar->subscribe(false, rxCb);
+
+        // Give the adapter ~500ms to settle after the GATT subscription
+        // before the first AT command — Vgate/iOS-Vlink drops the initial
+        // ATZ if sent immediately after connection.
+        delay(500);
 
         return true;
     }
@@ -126,6 +136,10 @@ private:
     // first whose service+both characteristics all exist on the device wins.
     bool _findCharacteristics() {
         static const char *kKnownTriples[][3] = {
+            // Vgate iCar / iOS-Vlink proprietary service — write and notify
+            // share the same characteristic UUID.
+            {"e7810a71-73ae-499d-8c15-faa9aef0c3f2",
+             "bef8d6c9-9c21-4c9e-b632-bd58c1009f9f", "bef8d6c9-9c21-4c9e-b632-bd58c1009f9f"},
             // Nordic UART Service: write is peripheral's RX, notify is peripheral's TX.
             {"6e400001-b5a3-f393-e0a9-e50e24dcca9e",
              "6e400002-b5a3-f393-e0a9-e50e24dcca9e", "6e400003-b5a3-f393-e0a9-e50e24dcca9e"},
