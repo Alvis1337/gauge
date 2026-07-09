@@ -32,16 +32,23 @@ public:
     bool connect(const std::string &address, uint32_t timeout_ms) {
         _rxQueue = xQueueCreate(16, sizeof(BleRxChunk));
 
-        NimBLEAddress addr(address, BLE_ADDR_PUBLIC);
-        _client = NimBLEDevice::createClient();
-        // setConnectTimeout takes whole seconds, not ms — round up so a
-        // sub-second caller-requested timeout doesn't truncate to 0.
         uint8_t timeout_s = (uint8_t)std::min<uint32_t>(255, (timeout_ms + 999) / 1000);
-        _client->setConnectTimeout(timeout_s ? timeout_s : 1);
-        if (!_client->connect(addr)) {
+        if (!timeout_s) timeout_s = 1;
+
+        // Some adapters (e.g. iOS-Vlink / Vgate iCar) use a RANDOM BLE
+        // address; others use PUBLIC. The scanner stores the address string
+        // without the type, so try PUBLIC first then RANDOM.
+        bool ble_ok = false;
+        for (uint8_t atype : {BLE_ADDR_PUBLIC, BLE_ADDR_RANDOM}) {
+            _client = NimBLEDevice::createClient();
+            _client->setConnectTimeout(timeout_s);
+            if (_client->connect(NimBLEAddress(address, atype))) {
+                ble_ok = true;
+                break;
+            }
             _cleanupClient();
-            return false;
         }
+        if (!ble_ok) return false;
 
         if (!_findCharacteristics()) {
             _client->disconnect();

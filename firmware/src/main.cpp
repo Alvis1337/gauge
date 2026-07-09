@@ -103,6 +103,16 @@ static bool gModeSelected     = false;
 static bool gUpdateModeChosen = false;
 static lv_obj_t *gCountdownLabel = nullptr;
 
+// Set from Settings UI "Upload Log to Discord" — survives ESP.restart()
+// so the next boot skips the countdown and enters Update Mode directly.
+RTC_DATA_ATTR static bool gRtcBootToUpdate;
+
+// Called from Settings UI.
+void rebootToUpdateMode() {
+    gRtcBootToUpdate = true;
+    ESP.restart();
+}
+
 static void build_mode_select_screen() {
     lv_obj_t *scr = lv_scr_act();
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x111111), 0);
@@ -444,15 +454,21 @@ void setup() {
     build_mode_select_screen();
     lv_timer_handler();
 
-    // 5-second countdown to Gauge Mode; tap either button to choose immediately.
-    uint32_t deadline = millis() + 5000;
-    while (!gModeSelected && millis() < deadline) {
-        int secs = (int)((deadline - millis() + 999) / 1000);
-        char buf[32];
-        snprintf(buf, sizeof(buf), "Gauge Mode (%ds)", secs);
-        lv_label_set_text(gCountdownLabel, buf);
-        lv_timer_handler();
-        delay(50);
+    // "Reboot to Update Mode" from Settings sets this flag before restarting.
+    if (gRtcBootToUpdate) {
+        gRtcBootToUpdate = false;
+        gUpdateModeChosen = true;
+    } else {
+        // 5-second countdown to Gauge Mode; tap either button to choose immediately.
+        uint32_t deadline = millis() + 5000;
+        while (!gModeSelected && millis() < deadline) {
+            int secs = (int)((deadline - millis() + 999) / 1000);
+            char buf[32];
+            snprintf(buf, sizeof(buf), "Gauge Mode (%ds)", secs);
+            lv_label_set_text(gCountdownLabel, buf);
+            lv_timer_handler();
+            delay(50);
+        }
     }
 
     if (gUpdateModeChosen) {
