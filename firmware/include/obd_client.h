@@ -14,16 +14,19 @@ struct GaugeData {
     float boost_psi  = NAN;
     float coolant_c  = NAN;
     float oil_temp_c = NAN;
-    float iat_c      = NAN;  // intake air temp (Mode 01 0x0F)
+    float ethanol    = NAN;  // MHD flex fuel kit — Mode 22 PID 0x4010
 };
 
 class ObdClient {
 public:
     static constexpr uint32_t DEFAULT_TIMEOUT_MS  = 1500;
+    static constexpr uint32_t MODE22_TIMEOUT_MS   = 2000;
+    static constexpr int      SKIP_AFTER_FAILURES = 3;
 
     bool connected = false;
 
     bool connect(const std::string &address) {
+        _ethanolFails = 0;
         obd_log::write("[try] %s", address.c_str());
         if (!_transport.connect(address, DEFAULT_TIMEOUT_MS)) {
             obd_log::write("[fail] BLE connect");
@@ -55,26 +58,31 @@ public:
         if (!isnan(map_kpa))
             data.boost_psi = (map_kpa - baro_kpa) * 0.145038f;
         data.coolant_c  = _query("0105", parsers::parseCoolant);
-        data.oil_temp_c = _query("015C", parsers::parseCoolant);  // Mode 01 engine oil temp
-        data.iat_c      = _query("010F", parsers::parseCoolant);  // Mode 01 intake air temp
+        data.oil_temp_c = _query("015C", parsers::parseCoolant);  // Mode 01 standard oil temp
+
+        if (_ethanolFails < SKIP_AFTER_FAILURES) {
+            data.ethanol = _query("224010", parsers::parseEthanol, MODE22_TIMEOUT_MS);
+            if (isnan(data.ethanol)) ++_ethanolFails; else _ethanolFails = 0;
+        }
 
         // One summary line per poll — decoded values at a glance.
-        char bstr[8], istr[8], cstr[8], ostr[8];
+        char bstr[8], estr[8], cstr[8], ostr[8];
         if (isnan(data.boost_psi))  snprintf(bstr, sizeof(bstr), "--");
         else                        snprintf(bstr, sizeof(bstr), "%.1f", data.boost_psi);
-        if (isnan(data.iat_c))      snprintf(istr, sizeof(istr), "--");
-        else                        snprintf(istr, sizeof(istr), "%.0fC", data.iat_c);
+        if (isnan(data.ethanol))    snprintf(estr, sizeof(estr), "--");
+        else                        snprintf(estr, sizeof(estr), "%.0f%%", data.ethanol);
         if (isnan(data.coolant_c))  snprintf(cstr, sizeof(cstr), "--");
         else                        snprintf(cstr, sizeof(cstr), "%.0fC", data.coolant_c);
         if (isnan(data.oil_temp_c)) snprintf(ostr, sizeof(ostr), "--");
         else                        snprintf(ostr, sizeof(ostr), "%.0fC", data.oil_temp_c);
-        obd_log::write("[poll] B=%s I=%s C=%s O=%s%s",
-                       bstr, istr, cstr, ostr, baro_fallback ? " baro~" : "");
+        obd_log::write("[poll] B=%s E=%s C=%s O=%s%s",
+                       bstr, estr, cstr, ostr, baro_fallback ? " baro~" : "");
         return data;
     }
 
 private:
     BleTransport _transport;
+    int _ethanolFails = 0;
 
     bool _initElm() {
         struct InitCmd { const char *cmd; uint32_t timeout_ms; uint32_t delay_ms; };
