@@ -18,7 +18,7 @@ namespace ota_updater {
 // certificate validation on whichever host it ends up on. That's a
 // deliberate tradeoff for a hobby project pulling its own public repo's
 // release over HTTPS, not a hardened production update channel.
-inline const char *kUrl = "https://github.com/Alvis1337/gauge/releases/latest/download/firmware.bin";
+static const char kUrl[] = "https://github.com/Alvis1337/gauge/releases/latest/download/firmware.bin";
 
 // Returns "" on success (device reboots before returning) or "up to date"
 // (nothing to do), or a human-readable error string on failure.

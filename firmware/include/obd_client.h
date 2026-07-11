@@ -1,10 +1,15 @@
 // ELM327 protocol client over BLE — the firmware equivalent of obd.py.
 // Same init handshake, response-echo parsing, and Mode 01/22 PID set as
 // the Python version; only the transport underneath changed.
+//
+// Hot path (_query / _sendRaw / _extractPayload / _responseEcho) is
+// entirely stack-allocated — no std::string in the polling loop.
+// ~30 heap alloc/free cycles per 100 ms were eliminated; on a 300 KB heap
+// shared with NimBLE and LVGL that matters for long-term fragmentation.
 #pragma once
 #include <Arduino.h>
-#include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <string>
 #include "ble_transport.h"
 #include "obd_log.h"
@@ -58,14 +63,13 @@ public:
         if (!isnan(map_kpa))
             data.boost_psi = (map_kpa - baro_kpa) * 0.145038f;
         data.fuel_pct   = _query("012F", parsers::parseFuelLevel);
-        data.oil_temp_c = _query("015C", parsers::parseCoolant);  // Mode 01 standard oil temp
+        data.oil_temp_c = _query("015C", parsers::parseCoolant);
 
         if (_ethanolFails < SKIP_AFTER_FAILURES) {
             data.ethanol = _query("2244DE", parsers::parseEthanol, MODE22_TIMEOUT_MS);
             if (isnan(data.ethanol)) ++_ethanolFails; else _ethanolFails = 0;
         }
 
-        // One summary line per poll — decoded values at a glance.
         char bstr[8], estr[8], fstr[8], ostr[8];
         if (isnan(data.boost_psi))  snprintf(bstr, sizeof(bstr), "--");
         else                        snprintf(bstr, sizeof(bstr), "%.1f", data.boost_psi);
@@ -88,15 +92,16 @@ private:
         struct InitCmd { const char *cmd; uint32_t timeout_ms; uint32_t delay_ms; };
         static const InitCmd cmds[] = {
             // Skip ATZ/ATWS: Vgate iCar / iOS-Vlink resets its BLE stack on
-            // any reset command, so we never see the response and init fails.
-            // The ELM127 powers up in a known state; ATE0 first is enough.
-            {"ATE0", DEFAULT_TIMEOUT_MS, 0},
-            {"ATL0", DEFAULT_TIMEOUT_MS, 0}, {"ATS0", DEFAULT_TIMEOUT_MS, 0},
-            {"ATSP0", DEFAULT_TIMEOUT_MS, 0}, {"ATH1", DEFAULT_TIMEOUT_MS, 0},
+            // any reset command. ATE0 first is enough.
+            {"ATE0",  DEFAULT_TIMEOUT_MS, 0},
+            {"ATL0",  DEFAULT_TIMEOUT_MS, 0},
+            {"ATS0",  DEFAULT_TIMEOUT_MS, 0},
+            {"ATSP0", DEFAULT_TIMEOUT_MS, 0},
+            {"ATH1",  DEFAULT_TIMEOUT_MS, 0},
         };
         for (auto &c : cmds) {
-            std::string resp;
-            if (!_sendRaw(c.cmd, c.timeout_ms, resp)) {
+            char resp[256];
+            if (!_sendRaw(c.cmd, c.timeout_ms, resp, sizeof(resp))) {
                 obd_log::write("[fail] AT cmd: %s", c.cmd);
                 return false;
             }
@@ -106,62 +111,80 @@ private:
         return true;
     }
 
-    float _query(const char *cmd, float (*parser)(const std::string &),
-                 uint32_t timeout_ms = DEFAULT_TIMEOUT_MS) {
-        std::string raw;
-        if (!_sendRaw(cmd, timeout_ms, raw)) return NAN;
-        std::string payload = _extractPayload(raw, cmd);
-        if (payload.empty()) return NAN;
-        return parser(payload);
-    }
+    // No heap allocation. Sends cmd+\r, receives until '>', writes into out[].
+    bool _sendRaw(const char *cmd, uint32_t timeout_ms, char *out, size_t out_len) {
+        char payload[16];
+        size_t cmd_len = strlen(cmd);
+        if (cmd_len + 1 >= sizeof(payload)) { out[0] = '\0'; return false; }
+        memcpy(payload, cmd, cmd_len);
+        payload[cmd_len] = '\r';
 
-    bool _sendRaw(const char *cmd, uint32_t timeout_ms, std::string &out) {
-        std::string payload = std::string(cmd) + "\r";
-        if (!_transport.send((const uint8_t *)payload.data(), payload.size())) {
+        if (!_transport.send((const uint8_t *)payload, cmd_len + 1)) {
             connected = false;
+            out[0] = '\0';
             return false;
         }
         uint8_t buf[256];
         size_t n = _transport.recvUntil('>', buf, sizeof(buf), timeout_ms);
         if (n == 0) {
             obd_log::write("[obd] %s -> timeout", cmd);
-            // A dropped BLE link (adapter out of range, powered off) shows
-            // up here as a recv timeout, not a send failure — writeValue()
-            // can succeed against a connection NimBLE hasn't fully torn
-            // down yet. Without this check, `connected` would stay true
-            // forever once that happens: poll() keeps returning all-NaN
-            // data every cycle and obd_task's `while (client.connected)`
-            // loop never exits to retry/rediscover the adapter.
             if (!_transport.connected()) connected = false;
+            out[0] = '\0';
             return false;
         }
-        out.assign((const char *)buf, n);
+        size_t copy = n < out_len - 1 ? n : out_len - 1;
+        memcpy(out, buf, copy);
+        out[copy] = '\0';
+
         char preview[49] = {};
         for (size_t i = 0, j = 0; i < n && j < 48; i++)
-            preview[j++] = (buf[i] >= 0x20 && buf[i] < 0x7f) ? buf[i] : '.';
+            preview[j++] = (buf[i] >= 0x20 && buf[i] < 0x7f) ? (char)buf[i] : '.';
         obd_log::write("[obd] %s -> '%s'", cmd, preview);
         return true;
     }
 
-    static std::string _responseEcho(const std::string &cmd) {
-        int mode = strtol(cmd.substr(0, 2).c_str(), nullptr, 16);
-        char buf[3];
-        snprintf(buf, sizeof(buf), "%02X", mode + 0x40);
-        std::string rest = cmd.substr(2);
-        std::transform(rest.begin(), rest.end(), rest.begin(), ::toupper);
-        return std::string(buf) + rest;
+    // Builds the expected response echo for a given command into out[].
+    // "010B" -> "410B", "2244DE" -> "6244DE".
+    static void _responseEcho(const char *cmd, char *out, size_t out_len) {
+        char mode_str[3] = {cmd[0], cmd[1], '\0'};
+        int mode = (int)strtol(mode_str, nullptr, 16);
+        size_t n = (size_t)snprintf(out, out_len, "%02X", mode + 0x40);
+        for (size_t i = 2; cmd[i] && n < out_len - 1; i++)
+            out[n++] = (char)toupper((unsigned char)cmd[i]);
+        out[n] = '\0';
     }
 
-    // Finds the response echo anywhere in the hex stream and returns the
-    // data bytes after it — robust to whatever the adapter prepends (CAN
-    // header, PCI/length byte, spacing) since it searches for the actual
-    // marker instead of assuming a fixed strip length.
-    static std::string _extractPayload(const std::string &raw, const std::string &cmd) {
-        std::string s;
-        for (char c : raw) if (isxdigit((unsigned char)c)) s += toupper(c);
-        std::string echo = _responseEcho(cmd);
-        size_t idx = s.find(echo);
-        if (idx == std::string::npos) return "";
-        return s.substr(idx + echo.size());
+    // Strips non-hex chars from raw, finds the response echo, writes payload
+    // bytes after it into out[]. Returns false if echo not found.
+    static bool _extractPayload(const char *raw, const char *cmd,
+                                char *out, size_t out_len) {
+        char stripped[256];
+        size_t si = 0;
+        for (const char *p = raw; *p && si < sizeof(stripped) - 1; p++) {
+            unsigned char c = (unsigned char)*p;
+            if (isxdigit(c)) stripped[si++] = (char)toupper(c);
+        }
+        stripped[si] = '\0';
+
+        char echo[16];
+        _responseEcho(cmd, echo, sizeof(echo));
+        const char *pos = strstr(stripped, echo);
+        if (!pos) { out[0] = '\0'; return false; }
+        pos += strlen(echo);
+
+        size_t len = strlen(pos);
+        size_t copy = len < out_len - 1 ? len : out_len - 1;
+        memcpy(out, pos, copy);
+        out[copy] = '\0';
+        return copy > 0;
+    }
+
+    float _query(const char *cmd, float (*parser)(const char *, size_t),
+                 uint32_t timeout_ms = DEFAULT_TIMEOUT_MS) {
+        char raw[256];
+        if (!_sendRaw(cmd, timeout_ms, raw, sizeof(raw))) return NAN;
+        char payload[128];
+        if (!_extractPayload(raw, cmd, payload, sizeof(payload))) return NAN;
+        return parser(payload, strlen(payload));
     }
 };

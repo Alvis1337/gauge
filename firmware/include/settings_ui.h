@@ -119,6 +119,10 @@ private:
     lv_obj_t *_otaStatusLabel = nullptr;
     lv_obj_t *_wifiListContainer = nullptr;
     lv_obj_t *_wifiListStatusLabel = nullptr;
+    lv_obj_t *_wifiPageLabel = nullptr;
+    lv_obj_t *_wifiPrevBtn = nullptr;
+    lv_obj_t *_wifiNextBtn = nullptr;
+    size_t _wifiPage = 0;
     lv_obj_t *_wifiPasswordTitle = nullptr;
     lv_obj_t *_wifiPasswordTextarea = nullptr;
     lv_obj_t *_wifiPasswordStatus = nullptr;
@@ -138,6 +142,10 @@ private:
     lv_obj_t *_obdAutoDiscoverSwitch = nullptr;
     lv_obj_t *_obdListContainer = nullptr;
     lv_obj_t *_obdListStatusLabel = nullptr;
+    lv_obj_t *_obdPageLabel = nullptr;
+    lv_obj_t *_obdPrevBtn = nullptr;
+    lv_obj_t *_obdNextBtn = nullptr;
+    size_t _obdPage = 0;
 
     portMUX_TYPE _mux = portMUX_INITIALIZER_UNLOCKED;
     std::vector<WifiScanResult> _scanResults;
@@ -200,6 +208,7 @@ private:
         lv_obj_align(wifiBtn, LV_ALIGN_TOP_MID, 0, 46);
         lv_obj_add_event_cb(wifiBtn, [](lv_event_t *e) {
             auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            lv_obj_clean(self->_wifiListContainer);
             self->_startWifiScan();
             lv_scr_load(self->_wifiListScreen);
         }, LV_EVENT_CLICKED, this);
@@ -276,12 +285,13 @@ private:
         lv_obj_align(backBtn, LV_ALIGN_TOP_LEFT, 0, 0);
         lv_obj_add_event_cb(backBtn, [](lv_event_t *e) {
             auto *self = (SettingsUI *)lv_event_get_user_data(e);
-            // Do NOT call _wifi->end() here. scan() polls for up to 12s and
-            // the task may still be running. poll() already calls end() after
-            // it rebuilds the list — which happens when the task finishes
-            // regardless of which screen is active. Calling end() mid-scan
-            // (WiFi.mode(WIFI_OFF) into a live scanNetworks()) corrupts the
-            // WiFi driver state machine.
+            // Free WiFi now if the scan task has already finished.
+            // If the scan is still running, leave the driver alone —
+            // poll() will call end() once the task posts scanDirty.
+            portENTER_CRITICAL(&self->_mux);
+            bool busy = self->_wifiScanInProgress || self->_wifiConnectInProgress;
+            portEXIT_CRITICAL(&self->_mux);
+            if (!busy) self->_wifi->end();
             self->_refreshWifiStatusLabel();
             lv_scr_load(self->_settingsScreen);
         }, LV_EVENT_CLICKED, this);
@@ -309,9 +319,48 @@ private:
         lv_obj_set_style_text_color(_wifiListStatusLabel, theme::subtext(), 0);
         lv_obj_align(_wifiListStatusLabel, LV_ALIGN_TOP_MID, 0, 32);
 
-        _wifiListContainer = lv_list_create(_wifiListScreen);
-        lv_obj_set_size(_wifiListContainer, 464, 240);
-        lv_obj_align(_wifiListContainer, LV_ALIGN_BOTTOM_MID, 0, 0);
+        // Plain non-scrollable container. lv_list_create() forces LVGL into
+        // layer-compositing mode (ARGB8888 stripe allocations) for the
+        // clipped scroll area — 13 KB of contiguous heap per render pass.
+        // That exhausts the heap when WiFi is also allocated (~35 KB).
+        // A plain obj with absolute-positioned children avoids all of that.
+        _wifiListContainer = lv_obj_create(_wifiListScreen);
+        lv_obj_set_size(_wifiListContainer, 464, 216);
+        lv_obj_align(_wifiListContainer, LV_ALIGN_TOP_MID, 0, 54);
+        lv_obj_clear_flag(_wifiListContainer, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_bg_color(_wifiListContainer, lv_color_hex(0x111111), 0);
+        lv_obj_set_style_border_width(_wifiListContainer, 0, 0);
+        lv_obj_set_style_pad_all(_wifiListContainer, 0, 0);
+
+        _wifiPrevBtn = lv_button_create(_wifiListScreen);
+        lv_obj_set_size(_wifiPrevBtn, 80, 28);
+        lv_obj_align(_wifiPrevBtn, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+        lv_obj_add_state(_wifiPrevBtn, LV_STATE_DISABLED);
+        lv_obj_add_event_cb(_wifiPrevBtn, [](lv_event_t *e) {
+            auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            if (self->_wifiPage > 0) { self->_wifiPage--; self->_rebuildWifiList(self->_scanResults); }
+        }, LV_EVENT_CLICKED, this);
+        lv_obj_t *prevLabel = lv_label_create(_wifiPrevBtn);
+        lv_label_set_text(prevLabel, "< Prev");
+        lv_obj_center(prevLabel);
+
+        _wifiPageLabel = lv_label_create(_wifiListScreen);
+        lv_label_set_text(_wifiPageLabel, "");
+        lv_obj_set_style_text_color(_wifiPageLabel, theme::subtext(), 0);
+        lv_obj_align(_wifiPageLabel, LV_ALIGN_BOTTOM_MID, 0, -6);
+
+        _wifiNextBtn = lv_button_create(_wifiListScreen);
+        lv_obj_set_size(_wifiNextBtn, 80, 28);
+        lv_obj_align(_wifiNextBtn, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+        lv_obj_add_state(_wifiNextBtn, LV_STATE_DISABLED);
+        lv_obj_add_event_cb(_wifiNextBtn, [](lv_event_t *e) {
+            auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            self->_wifiPage++;
+            self->_rebuildWifiList(self->_scanResults);
+        }, LV_EVENT_CLICKED, this);
+        lv_obj_t *nextLabel = lv_label_create(_wifiNextBtn);
+        lv_label_set_text(nextLabel, "Next >");
+        lv_obj_center(nextLabel);
     }
 
     void _startWifiScan() {
@@ -321,8 +370,12 @@ private:
         bool already = _wifiScanInProgress || _wifiConnectInProgress;
         if (!already) _wifiScanInProgress = true;
         portEXIT_CRITICAL(&_mux);
-        if (already) return;
+        if (already) {
+            lv_label_set_text(_wifiListStatusLabel, "Scanning...");
+            return;
+        }
 
+        _wifiPage = 0;
         lv_label_set_text(_wifiListStatusLabel, "Scanning...");
         auto *self = this;
         xTaskCreatePinnedToCore([](void *arg) {
@@ -335,32 +388,48 @@ private:
             // user either connects to a network (connect task calls end())
             // or navigates back without picking one (settings screen load
             // calls end() via LV_EVENT_SCREEN_LOADED).
+            // Move the OLD results out first so their String destructors run
+            // AFTER the lock — free() inside portENTER_CRITICAL risks the
+            // interrupt watchdog on a rescan that replaces existing entries.
+            std::vector<WifiScanResult> old;
             portENTER_CRITICAL(&self->_mux);
-            self->_scanResults = std::move(results);
+            old = std::move(self->_scanResults);   // old was empty: no destr
+            self->_scanResults = std::move(results); // dest now empty: safe
             self->_scanDirty = true;
             self->_wifiScanInProgress = false;
             portEXIT_CRITICAL(&self->_mux);
+            // old destructs here — String::free() runs outside the spinlock
             vTaskDelete(nullptr);
         }, "wifi_scan", 8192, self, 1, nullptr, 1);
     }
 
+    static const size_t WIFI_PAGE_SIZE = 5;
+
     void _rebuildWifiList(const std::vector<WifiScanResult> &results) {
         lv_obj_clean(_wifiListContainer);
-        lv_label_set_text(_wifiListStatusLabel, results.empty() ? "No networks found" : "");
-        for (size_t i = 0; i < results.size(); i++) {
-            String label = results[i].ssid + "  (" + String(results[i].rssi) + " dBm)";
-            lv_obj_t *btn = lv_list_add_button(_wifiListContainer, nullptr, label.c_str());
-            // Index into the last scan result, not a heap-allocated
-            // closure — safe as long as _scanResults isn't mutated between
-            // rebuild and tap, which holds since a rescan replaces the
-            // whole list+button set together.
+
+        size_t total = results.size();
+        size_t totalPages = total == 0 ? 1 : (total + WIFI_PAGE_SIZE - 1) / WIFI_PAGE_SIZE;
+        if (_wifiPage >= totalPages) _wifiPage = 0;
+
+        size_t pageStart = _wifiPage * WIFI_PAGE_SIZE;
+        size_t pageEnd   = pageStart + WIFI_PAGE_SIZE;
+        if (pageEnd > total) pageEnd = total;
+
+        lv_label_set_text(_wifiListStatusLabel, total == 0 ? "No networks found" : "");
+
+        for (size_t i = pageStart; i < pageEnd; i++) {
+            String lbl = results[i].ssid + "  (" + String(results[i].rssi) + " dBm)";
+            lv_obj_t *btn = lv_button_create(_wifiListContainer);
+            lv_obj_set_size(btn, 464, 40);
+            lv_obj_set_pos(btn, 0, (int)((i - pageStart) * 44));
             lv_obj_set_user_data(btn, (void *)(intptr_t)i);
+            lv_obj_t *btnLabel = lv_label_create(btn);
+            lv_label_set_text(btnLabel, lbl.c_str());
+            lv_obj_align(btnLabel, LV_ALIGN_LEFT_MID, 8, 0);
             lv_obj_add_event_cb(btn, [](lv_event_t *e) {
                 auto *self = (SettingsUI *)lv_event_get_user_data(e);
                 intptr_t idx = (intptr_t)lv_obj_get_user_data((lv_obj_t *)lv_event_get_current_target(e));
-                // Stack buffer — no heap allocation inside the critical section.
-                // A rescan task running on the other core can write _scanResults
-                // concurrently; the lock prevents tearing.
                 char ssid_buf[64] = {};
                 portENTER_CRITICAL(&self->_mux);
                 bool valid = (size_t)idx < self->_scanResults.size() &&
@@ -377,6 +446,21 @@ private:
                 lv_scr_load(self->_wifiPasswordScreen);
             }, LV_EVENT_CLICKED, this);
         }
+
+        char pageBuf[24];
+        snprintf(pageBuf, sizeof(pageBuf), "Page %u / %u",
+                 (unsigned)(_wifiPage + 1), (unsigned)totalPages);
+        lv_label_set_text(_wifiPageLabel, pageBuf);
+
+        if (_wifiPage == 0)
+            lv_obj_add_state(_wifiPrevBtn, LV_STATE_DISABLED);
+        else
+            lv_obj_remove_state(_wifiPrevBtn, LV_STATE_DISABLED);
+
+        if (_wifiPage + 1 >= totalPages)
+            lv_obj_add_state(_wifiNextBtn, LV_STATE_DISABLED);
+        else
+            lv_obj_remove_state(_wifiNextBtn, LV_STATE_DISABLED);
     }
 
     // ── WiFi password screen ─────────────────────────────────────────────
@@ -404,6 +488,7 @@ private:
 
         _wifiPasswordTextarea = lv_textarea_create(_wifiPasswordScreen);
         lv_textarea_set_one_line(_wifiPasswordTextarea, true);
+        lv_obj_clear_flag(_wifiPasswordTextarea, LV_OBJ_FLAG_SCROLLABLE);
         lv_textarea_set_password_mode(_wifiPasswordTextarea, true);
         lv_obj_set_size(_wifiPasswordTextarea, 300, 36);
         lv_obj_align(_wifiPasswordTextarea, LV_ALIGN_TOP_MID, -60, 34);
@@ -691,9 +776,43 @@ private:
         lv_label_set_text(logBtnLabel, "View OBD Log");
         lv_obj_center(logBtnLabel);
 
-        _obdListContainer = lv_list_create(_obdScreen);
-        lv_obj_set_size(_obdListContainer, 464, 152);
-        lv_obj_align(_obdListContainer, LV_ALIGN_BOTTOM_MID, 0, 0);
+        _obdListContainer = lv_obj_create(_obdScreen);
+        lv_obj_set_size(_obdListContainer, 464, 128);
+        lv_obj_align(_obdListContainer, LV_ALIGN_TOP_MID, 0, 142);
+        lv_obj_clear_flag(_obdListContainer, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_bg_color(_obdListContainer, lv_color_hex(0x111111), 0);
+        lv_obj_set_style_border_width(_obdListContainer, 0, 0);
+        lv_obj_set_style_pad_all(_obdListContainer, 0, 0);
+
+        _obdPrevBtn = lv_button_create(_obdScreen);
+        lv_obj_set_size(_obdPrevBtn, 80, 28);
+        lv_obj_align(_obdPrevBtn, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+        lv_obj_add_state(_obdPrevBtn, LV_STATE_DISABLED);
+        lv_obj_add_event_cb(_obdPrevBtn, [](lv_event_t *e) {
+            auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            if (self->_obdPage > 0) { self->_obdPage--; self->_rebuildObdList(self->_btScanResults); }
+        }, LV_EVENT_CLICKED, this);
+        lv_obj_t *obdPrevLabel = lv_label_create(_obdPrevBtn);
+        lv_label_set_text(obdPrevLabel, "< Prev");
+        lv_obj_center(obdPrevLabel);
+
+        _obdPageLabel = lv_label_create(_obdScreen);
+        lv_label_set_text(_obdPageLabel, "");
+        lv_obj_set_style_text_color(_obdPageLabel, theme::subtext(), 0);
+        lv_obj_align(_obdPageLabel, LV_ALIGN_BOTTOM_MID, 0, -6);
+
+        _obdNextBtn = lv_button_create(_obdScreen);
+        lv_obj_set_size(_obdNextBtn, 80, 28);
+        lv_obj_align(_obdNextBtn, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+        lv_obj_add_state(_obdNextBtn, LV_STATE_DISABLED);
+        lv_obj_add_event_cb(_obdNextBtn, [](lv_event_t *e) {
+            auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            self->_obdPage++;
+            self->_rebuildObdList(self->_btScanResults);
+        }, LV_EVENT_CLICKED, this);
+        lv_obj_t *obdNextLabel = lv_label_create(_obdNextBtn);
+        lv_label_set_text(obdNextLabel, "Next >");
+        lv_obj_center(obdNextLabel);
     }
 
     void _openObdScreen() {
@@ -710,12 +829,15 @@ private:
         portEXIT_CRITICAL(&_mux);
         if (already) return;
 
+        _obdPage = 0;
         lv_label_set_text(_obdListStatusLabel, "Scanning...");
         auto *self = this;
         xTaskCreatePinnedToCore([](void *arg) {
             auto *self = (SettingsUI *)arg;
             auto results = bt_discovery::scan();
+            std::vector<BtScanResult> oldBt;
             portENTER_CRITICAL(&self->_mux);
+            oldBt = std::move(self->_btScanResults);
             self->_btScanResults = std::move(results);
             self->_btScanDirty = true;
             self->_btScanInProgress = false;
@@ -724,22 +846,34 @@ private:
         }, "obd_scan", 8192, self, 1, nullptr, 1);
     }
 
+    static const size_t OBD_PAGE_SIZE = 3;
+
     void _rebuildObdList(const std::vector<BtScanResult> &results) {
         lv_obj_clean(_obdListContainer);
-        lv_label_set_text(_obdListStatusLabel, results.empty() ? "No devices found" : "");
-        for (size_t i = 0; i < results.size(); i++) {
-            String label = String(results[i].name.c_str());
-            if (bt_discovery::looksLikeObdName(results[i].name)) label += "  (looks like OBD)";
-            lv_obj_t *btn = lv_list_add_button(_obdListContainer, nullptr, label.c_str());
-            // Same index-into-last-scan-result approach as the WiFi list —
-            // safe since a rescan replaces the whole result set + list
-            // together, so there's no window where the index is stale.
+
+        size_t total = results.size();
+        size_t totalPages = total == 0 ? 1 : (total + OBD_PAGE_SIZE - 1) / OBD_PAGE_SIZE;
+        if (_obdPage >= totalPages) _obdPage = 0;
+
+        size_t pageStart = _obdPage * OBD_PAGE_SIZE;
+        size_t pageEnd   = pageStart + OBD_PAGE_SIZE;
+        if (pageEnd > total) pageEnd = total;
+
+        lv_label_set_text(_obdListStatusLabel, total == 0 ? "No devices found" : "");
+
+        for (size_t i = pageStart; i < pageEnd; i++) {
+            String lbl = String(results[i].name.c_str());
+            if (bt_discovery::looksLikeObdName(results[i].name)) lbl += "  (OBD)";
+            lv_obj_t *btn = lv_button_create(_obdListContainer);
+            lv_obj_set_size(btn, 464, 40);
+            lv_obj_set_pos(btn, 0, (int)((i - pageStart) * 44));
             lv_obj_set_user_data(btn, (void *)(intptr_t)i);
+            lv_obj_t *btnLabel = lv_label_create(btn);
+            lv_label_set_text(btnLabel, lbl.c_str());
+            lv_obj_align(btnLabel, LV_ALIGN_LEFT_MID, 8, 0);
             lv_obj_add_event_cb(btn, [](lv_event_t *e) {
                 auto *self = (SettingsUI *)lv_event_get_user_data(e);
                 intptr_t idx = (intptr_t)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
-                // Stack buffers — strncpy has no heap allocation, so the
-                // critical section stays alloc-free.
                 char addr_buf[32] = {};
                 char name_buf[64] = {};
                 portENTER_CRITICAL(&self->_mux);
@@ -750,9 +884,6 @@ private:
                 }
                 portEXIT_CRITICAL(&self->_mux);
                 if (!valid) return;
-                // Just a settings write + a signal for obd_task to retry
-                // now — no connect attempt happens here, so this can run
-                // straight in the click callback with no background task.
                 self->_settings->setObdBtAddress(addr_buf);
                 self->_settings->setObdBtName(name_buf);
                 self->_settings->requestObdReconnect();
@@ -760,6 +891,21 @@ private:
                 lv_label_set_text(self->_obdListStatusLabel, "Saved -- reconnecting...");
             }, LV_EVENT_CLICKED, this);
         }
+
+        char pageBuf[24];
+        snprintf(pageBuf, sizeof(pageBuf), "Page %u / %u",
+                 (unsigned)(_obdPage + 1), (unsigned)totalPages);
+        lv_label_set_text(_obdPageLabel, pageBuf);
+
+        if (_obdPage == 0)
+            lv_obj_add_state(_obdPrevBtn, LV_STATE_DISABLED);
+        else
+            lv_obj_remove_state(_obdPrevBtn, LV_STATE_DISABLED);
+
+        if (_obdPage + 1 >= totalPages)
+            lv_obj_add_state(_obdNextBtn, LV_STATE_DISABLED);
+        else
+            lv_obj_remove_state(_obdNextBtn, LV_STATE_DISABLED);
     }
 
     // ── OBD log screen ───────────────────────────────────────────────────
@@ -799,14 +945,14 @@ private:
         lv_label_set_text(uploadBtnLabel, "Upload to Discord");
         lv_obj_center(uploadBtnLabel);
 
-        lv_obj_t *scroll = lv_obj_create(_obdLogScreen);
-        lv_obj_set_size(scroll, 464, 258);
-        lv_obj_align(scroll, LV_ALIGN_BOTTOM_MID, 0, 0);
-        lv_obj_set_style_bg_color(scroll, lv_color_hex(0x1a1a1a), 0);
-        lv_obj_set_style_pad_all(scroll, 6, 0);
-        lv_obj_set_scroll_dir(scroll, LV_DIR_VER);
+        lv_obj_t *logBox = lv_obj_create(_obdLogScreen);
+        lv_obj_set_size(logBox, 464, 258);
+        lv_obj_align(logBox, LV_ALIGN_BOTTOM_MID, 0, 0);
+        lv_obj_set_style_bg_color(logBox, lv_color_hex(0x1a1a1a), 0);
+        lv_obj_set_style_pad_all(logBox, 6, 0);
+        lv_obj_clear_flag(logBox, LV_OBJ_FLAG_SCROLLABLE);
 
-        _obdLogLabel = lv_label_create(scroll);
+        _obdLogLabel = lv_label_create(logBox);
         lv_obj_set_style_text_font(_obdLogLabel, &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_color(_obdLogLabel, lv_color_hex(0xc0c0c0), 0);
         lv_obj_set_width(_obdLogLabel, lv_pct(100));
@@ -819,14 +965,17 @@ private:
         static char lines[obd_log::LINES][obd_log::LINE_LEN];
         size_t n = obd_log::snapshot(lines, obd_log::LINES);
         if (n == 0) { lv_label_set_text(_obdLogLabel, "No OBD activity yet"); return; }
+        // Show only the last 15 lines — fits the fixed-height box at
+        // font_montserrat_14 without any scrolling.
+        static const size_t OBD_LOG_DISPLAY = 15;
+        size_t start = n > OBD_LOG_DISPLAY ? n - OBD_LOG_DISPLAY : 0;
         String text;
-        text.reserve(n * obd_log::LINE_LEN);
-        for (size_t i = 0; i < n; i++) {
+        text.reserve((n - start) * obd_log::LINE_LEN);
+        for (size_t i = start; i < n; i++) {
             text += lines[i];
             if (i + 1 < n) text += '\n';
         }
         lv_label_set_text(_obdLogLabel, text.c_str());
-        lv_obj_scroll_to_y(lv_obj_get_parent(_obdLogLabel), LV_COORD_MAX, LV_ANIM_OFF);
     }
 
     // ── OTA ───────────────────────────────────────────────────────────────

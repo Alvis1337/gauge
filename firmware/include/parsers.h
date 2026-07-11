@@ -1,44 +1,36 @@
-// Parse OBD-II response payloads. Callers pass in just the hex data bytes
-// *after* the response echo (e.g. "1AF8" for a "410C" RPM response) — see
-// obd_client.h's extractPayload() for how that's isolated from the raw
-// adapter text (CAN header / PCI length byte / echo / spacing all
-// stripped there). NAN means "no value", mirroring Python's None.
+// Parse OBD-II response payloads. Callers pass the hex data bytes
+// *after* the response echo as a null-terminated char* + length — see
+// obd_client.h's _extractPayload() for how that's isolated. NAN = no value.
+// All functions take (const char *h, size_t len) — no heap allocation.
 #pragma once
 #include <cmath>
 #include <cstdlib>
-#include <string>
 
 namespace parsers {
 
-inline long hexByte(const std::string &h, size_t offset) {
-    if (h.size() < offset + 2) return -1;
-    return strtol(h.substr(offset, 2).c_str(), nullptr, 16);
+inline long hexByte(const char *h, size_t len, size_t offset) {
+    if (len < offset + 2) return -1;
+    char buf[3] = {h[offset], h[offset + 1], '\0'};
+    return strtol(buf, nullptr, 16);
 }
 
-inline float parseKpa(const std::string &h) {
-    long a = hexByte(h, 0);
+inline float parseKpa(const char *h, size_t len) {
+    long a = hexByte(h, len, 0);
     return a < 0 ? NAN : (float)a;
 }
 
-inline float parseCoolant(const std::string &h) {
-    long a = hexByte(h, 0);
+inline float parseCoolant(const char *h, size_t len) {
+    long a = hexByte(h, len, 0);
     return a < 0 ? NAN : (float)(a - 40);
 }
 
-// mode 22 DID 0x4402: raw * 191.25 / 255 - 48 = degC
-// Source: github.com/TomWis97/bmw-obd2-display
-inline float parseOilTemp4402(const std::string &h) {
-    long a = hexByte(h, 0);
-    return a < 0 ? NAN : a * 191.25f / 255.0f - 48.0f;
-}
-
-inline float parseEthanol(const std::string &h) {
-    long a = hexByte(h, 0);
+inline float parseEthanol(const char *h, size_t len) {
+    long a = hexByte(h, len, 0);
     return a < 0 ? NAN : (float)a;
 }
 
-inline float parseFuelLevel(const std::string &h) {
-    long a = hexByte(h, 0);
+inline float parseFuelLevel(const char *h, size_t len) {
+    long a = hexByte(h, len, 0);
     return a < 0 ? NAN : (float)a * 100.0f / 255.0f;
 }
 

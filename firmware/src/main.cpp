@@ -389,6 +389,12 @@ static void serial_console_poll() {
             bool connected = gShared.connected;
             portEXIT_CRITICAL(&gShared.mux);
             Serial.printf("obd connected: %s\n", connected ? "yes" : "no");
+        } else if (line == "log") {
+            static char logLines[obd_log::LINES][obd_log::LINE_LEN];
+            size_t n = obd_log::snapshot(logLines, obd_log::LINES);
+            Serial.printf("--- OBD log (%u lines) ---\n", (unsigned)n);
+            for (size_t i = 0; i < n; i++) Serial.println(logLines[i]);
+            Serial.println("--- end ---");
         } else if (line == "gpio") {
             // Read GPIO19 (MISO) with pull-up enabled to see if something is
             // actively driving it LOW, or if it's just floating.
@@ -411,7 +417,7 @@ static void serial_console_poll() {
             // Restore SPI MISO pin function
             gSpi.begin(PIN_SCLK, PIN_MISO, PIN_MOSI, -1);
         } else if (!line.isEmpty()) {
-            Serial.println("commands: wifi <ssid> <password> | ota | reboot | touch | gpio | status");
+            Serial.println("commands: wifi <ssid> [password] | ota | reboot | touch | gpio | webhook <url> | log | status");
         }
         line = "";
     }
@@ -500,7 +506,7 @@ void setup() {
 void loop() {
     uint32_t frame_start = millis();
     lv_timer_handler();
-    update_gauge_screen();
+    if (lv_scr_act() == gGaugeScreen) update_gauge_screen();
     gSettingsUi.poll();
     serial_console_poll();
     // Target ~16ms per frame without adding 16ms on top of however long

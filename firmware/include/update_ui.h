@@ -203,6 +203,7 @@ private:
 
         _webhookTextarea = lv_textarea_create(_webhookScreen);
         lv_textarea_set_one_line(_webhookTextarea, true);
+        lv_obj_clear_flag(_webhookTextarea, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_set_size(_webhookTextarea, 370, 36);
         lv_obj_align(_webhookTextarea, LV_ALIGN_TOP_LEFT, 0, 54);
 
