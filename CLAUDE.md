@@ -21,8 +21,14 @@ most logic lives in `firmware/include/*.h`, with `firmware/src/main.cpp` as the 
 | LCD RST    | 25   |
 | Touch CS   | 27   |
 
-Display: 480×320, BGR pixel order + inversion ON (MADCTL 0x28 + 0x21). `flush_cb` in
-main.cpp pre-compensates so every `lv_color_hex()` call in the app just works.
+Display: MSP4021 4" panel, 480×320. Init sequence sets MADCTL argument `0x28`
+(cmd `0x36`; MV=1 landscape + RGB=1 BGR filter order) then issues INVON command `0x21`
+(display inversion ON — this panel renders colors negative without it). Combined effect:
+LVGL's (R,G,B) arrives as (255-B, 255-G, 255-R) at the panel; `flush_cb` in main.cpp
+pre-compensates (swaps R5↔B5 and inverts all channels + byte-swaps for big-endian SPI)
+so every `lv_color_hex()` value in the app just works.
+
+SPI bus: both display and touch share VSPI. Display at 40MHz MODE0; touch at 1MHz MODE3.
 
 ## Architecture
 
@@ -114,6 +120,20 @@ Vgate iCar / iOS-Vlink quirks (baked into `ble_transport.h` and `obd_client.h`):
 - 500ms settle delay after GATT subscription before first AT command.
 - Skip ATZ/ATWS — resets the BLE stack on this adapter; go straight to ATE0.
 
+## XPT2046 touch quirks
+
+This specific panel has two non-obvious axis properties baked into `xpt2046_driver.h`:
+- **Axes are swapped**: the X ADC command (`0xD0`) tracks the physical *vertical* axis;
+  the Y ADC command (`0x90`) tracks the physical *horizontal* axis. Opposite of what
+  you'd expect.
+- **Both axes are physically inverted**: `read()` mirrors both before returning pixel
+  coordinates (`display_w - 1 - x`, `display_h - 1 - y`).
+- No T_IRQ pin wired — pressure is polled every LVGL frame via `_pressure()`.
+- First ADC sample after switching channels is discarded (mux settling); position reads
+  are median-filtered over 3 samples (`POSITION_SAMPLES = 3`).
+
+If touch coordinates seem wrong after hardware changes, check these axis mappings first.
+
 Known fallback order for GATT service discovery:
 1. Vgate proprietary (e7810a71 / bef8d6c9)
 2. Nordic UART Service (6e400001 / 6e400002 / 6e400003)
@@ -173,6 +193,10 @@ Useful for headless bring-up without a working touchscreen.
 ## Toolchain constraints
 
 Target: `xtensa-esp32-elf-gcc` via PlatformIO / Arduino-ESP32 framework.
+NimBLE: `h2zero/NimBLE-Arduino@^1.4.2`. LVGL: 9.5.0 (vendored in `lib/lvgl` — pulled
+from lib_deps registry would try to compile an ARM Helium .S file the Xtensa assembler
+can't handle). Partition scheme: `min_spiffs.csv` (two OTA app slots ~1.9MB each;
+current image ~975KB).
 
 - **Exceptions are disabled** (`-fno-exceptions`). Never use `try`/`catch` or design
   anything that depends on stack unwinding. Signal errors via return values or NaN.
@@ -180,8 +204,12 @@ Target: `xtensa-esp32-elf-gcc` via PlatformIO / Arduino-ESP32 framework.
   add heap overhead in a ~300KB free-heap environment where NimBLE holds ~40KB and
   LVGL compositing needs large contiguous chunks. Raw pointers with clear ownership
   are the right call here.
-- **C++17**, not C++20/23. `std::string_view`, structured bindings, and `if constexpr`
-  are available. Ranges, concepts, and `std::expected` are not.
+- **C++ standard: C++11/14, NOT C++17.** The Arduino-ESP32 toolchain default does not
+  enable C++17 — `std::clamp` is absent (xpt2046_driver.h works around this with a
+  hand-rolled clamp). Do NOT use: `std::clamp`, `std::string_view`, structured
+  bindings (`auto &[a, b]`), `if constexpr`, `std::optional`, or `std::filesystem`.
+  C++11 features (lambdas, `constexpr`, range-for, `std::move`, `std::sort`,
+  `std::min`/`max`, `static constexpr`) are all fine.
 - **No RTTI** (`-fno-rtti`). `dynamic_cast` and `typeid` are unavailable.
 - **Stack is scarce.** Tasks are created with explicit stack sizes (8–24KB). Don't put
   large arrays or deeply-nested frames on the stack inside tasks. `static` locals inside
