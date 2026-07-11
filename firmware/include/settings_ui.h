@@ -147,6 +147,7 @@ private:
     bool _btScanDirty = false;
     bool _scanDirty = false;
     bool _wifiScanInProgress = false;
+    bool _btScanInProgress = false;
     String _statusText;
     bool _statusDirty = false;
     String _pendingSsid;
@@ -276,7 +277,12 @@ private:
         lv_obj_align(backBtn, LV_ALIGN_TOP_LEFT, 0, 0);
         lv_obj_add_event_cb(backBtn, [](lv_event_t *e) {
             auto *self = (SettingsUI *)lv_event_get_user_data(e);
-            self->_wifi->end();  // release radio back to BLE if scan left it in STA mode
+            // Do NOT call _wifi->end() here. scan() polls for up to 12s and
+            // the task may still be running. poll() already calls end() after
+            // it rebuilds the list — which happens when the task finishes
+            // regardless of which screen is active. Calling end() mid-scan
+            // (WiFi.mode(WIFI_OFF) into a live scanNetworks()) corrupts the
+            // WiFi driver state machine.
             self->_refreshWifiStatusLabel();
             lv_scr_load(self->_settingsScreen);
         }, LV_EVENT_CLICKED, this);
@@ -353,11 +359,18 @@ private:
             lv_obj_add_event_cb(btn, [](lv_event_t *e) {
                 auto *self = (SettingsUI *)lv_event_get_user_data(e);
                 intptr_t idx = (intptr_t)lv_obj_get_user_data((lv_obj_t *)lv_event_get_current_target(e));
-                // _scanResults is only written from the scan task (which is
-                // done by the time the user can tap a result), so no lock needed.
-                if ((size_t)idx >= self->_scanResults.size()) return;
-                String ssid = self->_scanResults[idx].ssid;
-                if (ssid.isEmpty()) return;
+                // Stack buffer — no heap allocation inside the critical section.
+                // A rescan task running on the other core can write _scanResults
+                // concurrently; the lock prevents tearing.
+                char ssid_buf[64] = {};
+                portENTER_CRITICAL(&self->_mux);
+                bool valid = (size_t)idx < self->_scanResults.size() &&
+                             !self->_scanResults[idx].ssid.isEmpty();
+                if (valid)
+                    strncpy(ssid_buf, self->_scanResults[idx].ssid.c_str(), sizeof(ssid_buf) - 1);
+                portEXIT_CRITICAL(&self->_mux);
+                if (!valid) return;
+                String ssid(ssid_buf);
                 self->_pendingSsid = ssid;
                 lv_label_set_text(self->_wifiPasswordTitle, ("Connect to: " + ssid).c_str());
                 lv_textarea_set_text(self->_wifiPasswordTextarea, "");
@@ -680,6 +693,12 @@ private:
     }
 
     void _startObdScan() {
+        portENTER_CRITICAL(&_mux);
+        bool already = _btScanInProgress;
+        if (!already) _btScanInProgress = true;
+        portEXIT_CRITICAL(&_mux);
+        if (already) return;
+
         lv_label_set_text(_obdListStatusLabel, "Scanning...");
         auto *self = this;
         xTaskCreate([](void *arg) {
@@ -688,6 +707,7 @@ private:
             portENTER_CRITICAL(&self->_mux);
             self->_btScanResults = std::move(results);
             self->_btScanDirty = true;
+            self->_btScanInProgress = false;
             portEXIT_CRITICAL(&self->_mux);
             vTaskDelete(nullptr);
         }, "obd_scan", 8192, self, 1, nullptr);
@@ -707,17 +727,23 @@ private:
             lv_obj_add_event_cb(btn, [](lv_event_t *e) {
                 auto *self = (SettingsUI *)lv_event_get_user_data(e);
                 intptr_t idx = (intptr_t)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
+                // Stack buffers — strncpy has no heap allocation, so the
+                // critical section stays alloc-free.
+                char addr_buf[32] = {};
+                char name_buf[64] = {};
                 portENTER_CRITICAL(&self->_mux);
                 bool valid = (size_t)idx < self->_btScanResults.size();
-                std::string addr = valid ? self->_btScanResults[idx].address : "";
-                std::string name = valid ? self->_btScanResults[idx].name : "";
+                if (valid) {
+                    strncpy(addr_buf, self->_btScanResults[idx].address.c_str(), sizeof(addr_buf) - 1);
+                    strncpy(name_buf, self->_btScanResults[idx].name.c_str(), sizeof(name_buf) - 1);
+                }
                 portEXIT_CRITICAL(&self->_mux);
                 if (!valid) return;
                 // Just a settings write + a signal for obd_task to retry
                 // now — no connect attempt happens here, so this can run
                 // straight in the click callback with no background task.
-                self->_settings->setObdBtAddress(addr);
-                self->_settings->setObdBtName(name);
+                self->_settings->setObdBtAddress(addr_buf);
+                self->_settings->setObdBtName(name_buf);
                 self->_settings->requestObdReconnect();
                 self->_refreshObdStatusLabel();
                 lv_label_set_text(self->_obdListStatusLabel, "Saved -- reconnecting...");
