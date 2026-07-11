@@ -41,9 +41,11 @@ private:
     bool           _done        = false;
     bool           _autoUpload  = false;
 
-    portMUX_TYPE _mux        = portMUX_INITIALIZER_UNLOCKED;
+    portMUX_TYPE _mux             = portMUX_INITIALIZER_UNLOCKED;
     String       _statusText;
-    bool         _statusDirty = false;
+    bool         _statusDirty    = false;
+    bool         _otaInProgress  = false;
+    bool         _uploadInProgress = false;
 
     lv_obj_t *_mainScreen    = nullptr;
     lv_obj_t *_wifiLabel     = nullptr;
@@ -266,6 +268,12 @@ private:
             _setStatus("Not connected to WiFi");
             return;
         }
+        portENTER_CRITICAL(&_mux);
+        bool already = _otaInProgress;
+        if (!already) _otaInProgress = true;
+        portEXIT_CRITICAL(&_mux);
+        if (already) return;
+
         _setStatus("Checking for update...");
         struct Ctx { UpdateUI *self; };
         auto *ctx = new Ctx{this};
@@ -276,6 +284,9 @@ private:
             // Only reached if no update (update reboots the device).
             bool upToDate = (result == "up to date");
             obd_log::write("[upd] OTA: %s", result.c_str());
+            portENTER_CRITICAL(&ctx->self->_mux);
+            ctx->self->_otaInProgress = false;
+            portEXIT_CRITICAL(&ctx->self->_mux);
             ctx->self->_setStatus(upToDate ? "Firmware up to date" : "OTA: " + result);
             delete ctx;
             vTaskDelete(nullptr);
@@ -287,6 +298,12 @@ private:
             _setStatus("Not connected to WiFi");
             return;
         }
+        portENTER_CRITICAL(&_mux);
+        bool already = _uploadInProgress;
+        if (!already) _uploadInProgress = true;
+        portEXIT_CRITICAL(&_mux);
+        if (already) return;
+
         _setStatus("Uploading OBD log...");
         struct Ctx { UpdateUI *self; };
         auto *ctx = new Ctx{this};
@@ -295,6 +312,9 @@ private:
             obd_log::write("[upd] manual upload...");
             std::string url = ctx->self->_settings->logWebhookUrl();
             String result = log_uploader::upload(url.c_str());
+            portENTER_CRITICAL(&ctx->self->_mux);
+            ctx->self->_uploadInProgress = false;
+            portEXIT_CRITICAL(&ctx->self->_mux);
             if (result.isEmpty()) {
                 obd_log::write("[upd] upload ok");
                 ctx->self->_setStatus("Log uploaded!");

@@ -75,25 +75,23 @@ public:
         _btScanDirty = false;
         bool statusDirty = _statusDirty;
         if (statusDirty) { status = std::move(_statusText); _statusDirty = false; }
+        bool connectRunning = _wifiConnectInProgress;
         portEXIT_CRITICAL(&_mux);
 
         if (scanDirty) {
-            // Copy (not move) — click handlers index into _scanResults after
-            // the list is built, so _scanResults must stay populated.
-            portENTER_CRITICAL(&_mux);
-            std::vector<WifiScanResult> results = _scanResults;
-            portEXIT_CRITICAL(&_mux);
-            _rebuildWifiList(results);
-            // Free the WiFi driver heap (~30KB) now that the list is built.
-            // NimBLE already holds ~40KB; leaving WiFi alive starves LVGL's
-            // layer-compositing allocator and freezes the rendered list.
-            _wifi->end();
+            // No lock needed here: the scan task that set _scanDirty=true also
+            // cleared _wifiScanInProgress in the same critical section, then
+            // called vTaskDelete(). Both poll() and LVGL click handlers run on
+            // core 1 sequentially, so no new scan can start while poll() runs —
+            // _scanResults is stable for the duration of this call.
+            _rebuildWifiList(_scanResults);
+            // Free the WiFi driver heap (~30KB) now that the list is built, but
+            // only if a connect task isn't also using the WiFi driver right now.
+            if (!connectRunning) _wifi->end();
         }
         if (btScanDirty) {
-            portENTER_CRITICAL(&_mux);
-            std::vector<BtScanResult> results = _btScanResults;
-            portEXIT_CRITICAL(&_mux);
-            _rebuildObdList(results);
+            // Same reasoning as above — _btScanResults is stable on core 1.
+            _rebuildObdList(_btScanResults);
         }
         if (statusDirty) {
             lv_label_set_text(_otaStatusLabel, status.c_str());
@@ -148,6 +146,7 @@ private:
     bool _scanDirty = false;
     bool _wifiScanInProgress = false;
     bool _btScanInProgress = false;
+    bool _wifiConnectInProgress = false;
     String _statusText;
     bool _statusDirty = false;
     String _pendingSsid;
@@ -431,6 +430,12 @@ private:
     }
 
     void _startWifiConnect() {
+        portENTER_CRITICAL(&_mux);
+        bool already = _wifiConnectInProgress;
+        if (!already) _wifiConnectInProgress = true;
+        portEXIT_CRITICAL(&_mux);
+        if (already) return;
+
         String password = lv_textarea_get_text(_wifiPasswordTextarea);
         String ssid = _pendingSsid;
         _setStatus("Connecting...");
@@ -441,6 +446,12 @@ private:
             auto *ctx = (Ctx *)arg;
             ctx->self->_wifi->begin();  // re-init WiFi (freed after scan to save heap)
             bool ok = ctx->self->_wifi->connect(ctx->ssid, ctx->password);
+            // Clear flag before end() so poll()'s pending _wifi->end() (if a
+            // scan completed while we were connecting) can finally run — and
+            // so a second tap is unblocked the moment we're done.
+            portENTER_CRITICAL(&ctx->self->_mux);
+            ctx->self->_wifiConnectInProgress = false;
+            portEXIT_CRITICAL(&ctx->self->_mux);
             if (ok) {
                 ctx->self->_settings->setWifiCredentials(ctx->ssid.c_str(), ctx->password.c_str());
                 ctx->self->_wifi->end();  // only needed transiently — give the radio back to BLE
