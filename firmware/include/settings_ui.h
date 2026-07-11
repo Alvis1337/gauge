@@ -318,7 +318,7 @@ private:
         // Guard against double-tap spawning two concurrent scan tasks —
         // WiFi.scanNetworks() is not safe to call from two tasks at once.
         portENTER_CRITICAL(&_mux);
-        bool already = _wifiScanInProgress;
+        bool already = _wifiScanInProgress || _wifiConnectInProgress;
         if (!already) _wifiScanInProgress = true;
         portEXIT_CRITICAL(&_mux);
         if (already) return;

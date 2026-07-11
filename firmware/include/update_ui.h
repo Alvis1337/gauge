@@ -269,7 +269,7 @@ private:
             return;
         }
         portENTER_CRITICAL(&_mux);
-        bool already = _otaInProgress;
+        bool already = _otaInProgress || _uploadInProgress;
         if (!already) _otaInProgress = true;
         portEXIT_CRITICAL(&_mux);
         if (already) return;
@@ -299,7 +299,7 @@ private:
             return;
         }
         portENTER_CRITICAL(&_mux);
-        bool already = _uploadInProgress;
+        bool already = _uploadInProgress || _otaInProgress;
         if (!already) _uploadInProgress = true;
         portEXIT_CRITICAL(&_mux);
         if (already) return;
