@@ -47,6 +47,24 @@ protected shared state; `poll()` / `loop()` reflects that into labels once per f
 
 Use `portMUX_TYPE` spinlocks with `portENTER_CRITICAL` / `portEXIT_CRITICAL`.
 
+**How it actually works on ESP32 dual-core (important):**
+`portENTER_CRITICAL` on the *calling* core disables that core's interrupts and acquires
+the spinlock. If the other core is already holding the same mux, the calling core spins
+with ITS OWN interrupts disabled until the lock is released — meaning both cores can end
+up with interrupts disabled simultaneously during contention. Short critical sections
+aren't just a convention; they're essential to avoid triggering the interrupt watchdog.
+
+**LVGL has no internal FreeRTOS task** (`LV_USE_OS = LV_OS_NONE` in `lv_conf.h`).
+`lv_freertos.c` compiles to dead code. LVGL is driven entirely by `lv_timer_handler()`
+in `loop()`. All `lv_*` calls happen in the Arduino main task on core 1.
+
+**Background task core assignment:** `obd_task` is the only task pinned to a core
+(core 0 via `xTaskCreatePinnedToCore`). All other `xTaskCreate` tasks — wifi_scan,
+wifi_connect, obd_scan, upd_wifi, upd_ota, upd_log — are unpinned; the FreeRTOS
+scheduler places them on whichever core it chooses. They are currently safe on any core
+because none call `lv_*`. Any future task that needs LVGL must be pinned to core 1 or
+use the dirty-flag pattern.
+
 **What is safe inside `portENTER_CRITICAL`:**
 - Plain assignments (bool, int, float)
 - `String::move` / `std::move` on a String (pointer swap, no allocation)
@@ -204,12 +222,13 @@ current image ~975KB).
   add heap overhead in a ~300KB free-heap environment where NimBLE holds ~40KB and
   LVGL compositing needs large contiguous chunks. Raw pointers with clear ownership
   are the right call here.
-- **C++ standard: C++11/14, NOT C++17.** The Arduino-ESP32 toolchain default does not
-  enable C++17 — `std::clamp` is absent (xpt2046_driver.h works around this with a
-  hand-rolled clamp). Do NOT use: `std::clamp`, `std::string_view`, structured
-  bindings (`auto &[a, b]`), `if constexpr`, `std::optional`, or `std::filesystem`.
-  C++11 features (lambdas, `constexpr`, range-for, `std::move`, `std::sort`,
-  `std::min`/`max`, `static constexpr`) are all fine.
+- **C++ standard: `gnu++11` only.** PlatformIO Arduino-ESP32 defaults to `-std=gnu++11`.
+  Neither C++14 nor C++17 features are available. Do NOT use: `std::clamp` (C++17),
+  `std::string_view` (C++17), structured bindings `auto &[a,b]` (C++17), `if constexpr`
+  (C++17), `std::optional` (C++17), `std::make_unique` (C++14), generic lambdas (C++14),
+  or multi-statement `constexpr` functions (C++14). Safe: lambdas with explicit types,
+  range-for, `std::move`, `std::sort`, `std::min`/`max`, `static constexpr`,
+  single-return `constexpr`.
 - **No RTTI** (`-fno-rtti`). `dynamic_cast` and `typeid` are unavailable.
 - **Stack is scarce.** Tasks are created with explicit stack sizes (8–24KB). Don't put
   large arrays or deeply-nested frames on the stack inside tasks. `static` locals inside
@@ -217,6 +236,19 @@ current image ~975KB).
 - **Heap fragmentation matters.** Prefer fixed-size buffers, `std::move`, and reuse over
   repeated allocate-free cycles. Vectors that grow once and stay are fine; vectors that
   repeatedly grow and shrink fragment the heap.
+
+## Task stack sizes
+
+| Task name      | Stack  | Notes |
+|----------------|--------|-------|
+| obd_task       | 12288  | Pinned core 0; ELM327 string handling + BLE I/O |
+| wifi_scan      | 8192   | WiFi scan + std::vector build |
+| wifi_connect   | 8192   | WiFi connect loop |
+| obd_scan       | 8192   | NimBLE `bt_discovery::scan()` — NimBLE yields during 6s scan via ulTaskNotifyTake |
+| upd_wifi       | 24576  | WiFi connect + optional log upload |
+| upd_ota        | 16384  | HTTPClient OTA download |
+| upd_log        | 24576  | HTTPClient log POST |
+| ota_reboot     | 2048   | vTaskDelay + ESP.restart() only |
 
 ## Race condition checklist (run mentally before any new background task)
 

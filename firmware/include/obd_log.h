@@ -37,13 +37,16 @@ inline void write(const char *fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(tmp, sizeof(tmp), fmt, ap);
     va_end(ap);
-    Serial.println(tmp);
     portENTER_CRITICAL(&_mux);
     strncpy(_buf[_head % LINES], tmp, LINE_LEN - 1);
     _buf[_head % LINES][LINE_LEN - 1] = '\0';
     _head++;
     _dirty = true;
     portEXIT_CRITICAL(&_mux);
+    // Serial AFTER the lock so USB output order matches ring buffer order.
+    // ESP32's UART driver has internal locking so concurrent calls from
+    // multiple tasks don't corrupt; they just serialize.
+    Serial.println(tmp);
 }
 
 inline bool isDirty() {
