@@ -169,3 +169,38 @@ Useful for headless bring-up without a working touchscreen.
 - All in-progress flags: check + set in single critical section, clear in task under lock
   before posting result status.
 - LVGL v9.5.0 API (not v8). Object creation: `lv_button_create`, `lv_obj_create`, etc.
+
+## Toolchain constraints
+
+Target: `xtensa-esp32-elf-gcc` via PlatformIO / Arduino-ESP32 framework.
+
+- **Exceptions are disabled** (`-fno-exceptions`). Never use `try`/`catch` or design
+  anything that depends on stack unwinding. Signal errors via return values or NaN.
+- **No smart pointers** in hot paths. `std::unique_ptr` / `std::shared_ptr` exist but
+  add heap overhead in a ~300KB free-heap environment where NimBLE holds ~40KB and
+  LVGL compositing needs large contiguous chunks. Raw pointers with clear ownership
+  are the right call here.
+- **C++17**, not C++20/23. `std::string_view`, structured bindings, and `if constexpr`
+  are available. Ranges, concepts, and `std::expected` are not.
+- **No RTTI** (`-fno-rtti`). `dynamic_cast` and `typeid` are unavailable.
+- **Stack is scarce.** Tasks are created with explicit stack sizes (8–24KB). Don't put
+  large arrays or deeply-nested frames on the stack inside tasks. `static` locals inside
+  functions are fine (go in BSS/data, not stack).
+- **Heap fragmentation matters.** Prefer fixed-size buffers, `std::move`, and reuse over
+  repeated allocate-free cycles. Vectors that grow once and stay are fine; vectors that
+  repeatedly grow and shrink fragment the heap.
+
+## Race condition checklist (run mentally before any new background task)
+
+When adding a new operation that spawns a `xTaskCreate`:
+1. Is there an `_xxxInProgress` flag? Check + set atomically under `portENTER_CRITICAL`.
+2. Does it use WiFi? Block if `_wifiScanInProgress || _wifiConnectInProgress` (they share
+   a driver with no internal locking).
+3. Does it use the BLE radio? Acquire `bt_discovery::_scanMutex()` first.
+4. Does the task write shared data for the UI? Use dirty-flag pattern: write data + set
+   flag in ONE critical section.
+5. Does the task allocate inside a critical section? It shouldn't. Move allocation out.
+6. Does `poll()` need to defer a cleanup call (like `_wifi->end()`) until the task is
+   done? Read the in-progress flag in the same critical section as the dirty flags.
+7. Clear the in-progress flag under lock BEFORE calling `_setStatus()` — so a second
+   tap is unblocked the instant the operation finishes, not after the label update.
