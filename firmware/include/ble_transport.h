@@ -31,8 +31,6 @@ public:
     ~BleTransport() { close(); }
 
     bool connect(const std::string &address, uint32_t timeout_ms) {
-        _rxQueue = xQueueCreate(16, sizeof(BleRxChunk));
-
         uint8_t timeout_s = (uint8_t)std::min<uint32_t>(255, (timeout_ms + 999) / 1000);
         if (!timeout_s) timeout_s = 1;
 
@@ -57,6 +55,10 @@ public:
             return false;
         }
 
+        // Queue created here — after both the BLE connect and GATT discovery
+        // succeed — so there are no failure paths that could leak it.
+        _rxQueue = xQueueCreate(16, sizeof(BleRxChunk));
+
         obd_log::write("[ble] tx=%s", _writeChar->getUUID().toString().c_str());
         obd_log::write("[ble] rx=%s", _notifyChar->getUUID().toString().c_str());
         obd_log::write("[ble] canWr=%d canWrNR=%d canNtf=%d canInd=%d",
@@ -69,6 +71,9 @@ public:
         // responses (ATE0, ATH1, OBD replies) as indicate — subscribing to
         // only one type silently drops the other.
         auto rxCb = [this](NimBLERemoteCharacteristic *, uint8_t *data, size_t len, bool) {
+            // Guard against close() nulling _rxQueue between disconnect() and
+            // deleteClient() — NimBLE may still fire a callback in that window.
+            if (!_rxQueue) return;
             BleRxChunk chunk;
             size_t n = len > sizeof(chunk.data) ? sizeof(chunk.data) : len;
             memcpy(chunk.data, data, n);

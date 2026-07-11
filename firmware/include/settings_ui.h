@@ -63,13 +63,18 @@ public:
         // core / delays interrupts long enough to risk watchdog resets),
         // so only take the lock, and only copy, when a background task
         // actually posted something new.
+        // Move _statusText atomically with the dirty-flag clear (same lock).
+        // Two separate critical sections let a new _setStatus() land between
+        // them: _statusDirty ends up true again but _statusText is already
+        // empty, so the next poll() call would blank the label.
+        String status;
         portENTER_CRITICAL(&_mux);
         bool scanDirty = _scanDirty;
         _scanDirty = false;
         bool btScanDirty = _btScanDirty;
         _btScanDirty = false;
         bool statusDirty = _statusDirty;
-        _statusDirty = false;
+        if (statusDirty) { status = std::move(_statusText); _statusDirty = false; }
         portEXIT_CRITICAL(&_mux);
 
         if (scanDirty) {
@@ -91,10 +96,6 @@ public:
             _rebuildObdList(results);
         }
         if (statusDirty) {
-            String status;
-            portENTER_CRITICAL(&_mux);
-            status = std::move(_statusText);
-            portEXIT_CRITICAL(&_mux);
             lv_label_set_text(_otaStatusLabel, status.c_str());
             lv_label_set_text(_wifiPasswordStatus, status.c_str());
         }
@@ -145,6 +146,7 @@ private:
     std::vector<BtScanResult> _btScanResults;
     bool _btScanDirty = false;
     bool _scanDirty = false;
+    bool _wifiScanInProgress = false;
     String _statusText;
     bool _statusDirty = false;
     String _pendingSsid;
@@ -308,6 +310,14 @@ private:
     }
 
     void _startWifiScan() {
+        // Guard against double-tap spawning two concurrent scan tasks —
+        // WiFi.scanNetworks() is not safe to call from two tasks at once.
+        portENTER_CRITICAL(&_mux);
+        bool already = _wifiScanInProgress;
+        if (!already) _wifiScanInProgress = true;
+        portEXIT_CRITICAL(&_mux);
+        if (already) return;
+
         lv_label_set_text(_wifiListStatusLabel, "Scanning...");
         auto *self = this;
         xTaskCreate([](void *arg) {
@@ -323,6 +333,7 @@ private:
             portENTER_CRITICAL(&self->_mux);
             self->_scanResults = std::move(results);
             self->_scanDirty = true;
+            self->_wifiScanInProgress = false;
             portEXIT_CRITICAL(&self->_mux);
             vTaskDelete(nullptr);
         }, "wifi_scan", 8192, self, 1, nullptr);

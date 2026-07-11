@@ -63,15 +63,18 @@ private:
     }
 
     void _poll() {
-        portENTER_CRITICAL(&_mux);
-        bool dirty = _statusDirty;
-        _statusDirty = false;
-        portEXIT_CRITICAL(&_mux);
-        if (!dirty) return;
+        // Read the dirty flag AND move the status string in a single critical
+        // section. Two separate locks would allow a new _setStatus() call to
+        // land between them — leaving _statusDirty=true but _statusText empty
+        // (already moved), so the next poll() would blank the label.
+        // String::move is pointer-transfer only (no allocation), so it's safe
+        // inside portENTER_CRITICAL.
         String status;
         portENTER_CRITICAL(&_mux);
-        status = std::move(_statusText);
+        bool dirty = _statusDirty;
+        if (dirty) { status = std::move(_statusText); _statusDirty = false; }
         portEXIT_CRITICAL(&_mux);
+        if (!dirty) return;
         lv_label_set_text(_statusLabel, status.c_str());
         _refreshWifiLabel();
         _refreshWebhookLabel();

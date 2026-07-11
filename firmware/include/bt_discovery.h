@@ -44,17 +44,11 @@ inline bool looksLikeObdName(const std::string &name) {
     return false;
 }
 
-// Every nearby BLE device, with name-hinted OBD-looking devices sorted
-// first. No GATT connection is made here — this backs the settings UI's
-// device list, where a person's judgment substitutes for verifying every
-// device seen.
-inline std::vector<BtScanResult> scan(uint32_t scan_seconds = 6) {
-    xSemaphoreTake(_scanMutex(), portMAX_DELAY);
-
+// Inner scan — caller must hold _scanMutex().
+inline std::vector<BtScanResult> _scanNoLock(uint32_t scan_seconds = 6) {
     NimBLEScan *pScan = NimBLEDevice::getScan();
     pScan->setActiveScan(true);
     NimBLEScanResults results = pScan->start(scan_seconds, false);
-
     std::vector<BtScanResult> out;
     for (int i = 0; i < results.getCount(); i++) {
         NimBLEAdvertisedDevice dev = results.getDevice(i);
@@ -66,7 +60,16 @@ inline std::vector<BtScanResult> scan(uint32_t scan_seconds = 6) {
         return looksLikeObdName(a.name) && !looksLikeObdName(b.name);
     });
     pScan->clearResults();
+    return out;
+}
 
+// Every nearby BLE device, with name-hinted OBD-looking devices sorted
+// first. No GATT connection is made here — this backs the settings UI's
+// device list, where a person's judgment substitutes for verifying every
+// device seen.
+inline std::vector<BtScanResult> scan(uint32_t scan_seconds = 6) {
+    xSemaphoreTake(_scanMutex(), portMAX_DELAY);
+    auto out = _scanNoLock(scan_seconds);
     xSemaphoreGive(_scanMutex());
     return out;
 }
@@ -89,18 +92,26 @@ inline bool verify(const std::string &address, uint32_t timeout_ms = 5000) {
 }
 
 // Scans for nearby BLE devices whose advertised name hints at being an
-// OBD adapter, verifies each via a real ATZ handshake in order, and
+// OBD adapter, verifies each via a real GATT connect in order, and
 // returns the first one that actually replies like an ELM327 — or "".
 // This is the automatic fallback the polling loop reaches for once the
 // configured address goes unreachable; the interactive "Scan for
 // Bluetooth adapters" list in the settings UI uses scan() instead and
 // lets a person pick.
+//
+// The mutex is held across both the scan AND the verify() connect so
+// a concurrent settings-UI scan() call can't start a BLE passive scan
+// while we're mid-connect — the NimBLE radio can't do both at once.
 inline std::string discover(uint32_t scan_seconds = 6) {
-    for (auto &candidate : scan(scan_seconds)) {
-        if (!looksLikeObdName(candidate.name)) continue;
-        if (verify(candidate.address)) return candidate.address;
+    xSemaphoreTake(_scanMutex(), portMAX_DELAY);
+    auto candidates = _scanNoLock(scan_seconds);
+    std::string found;
+    for (auto &c : candidates) {
+        if (!looksLikeObdName(c.name)) continue;
+        if (verify(c.address)) { found = c.address; break; }
     }
-    return "";
+    xSemaphoreGive(_scanMutex());
+    return found;
 }
 
 }  // namespace bt_discovery
