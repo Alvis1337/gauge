@@ -37,4 +37,9 @@ inline float parseEthanol(const std::string &h) {
     return a < 0 ? NAN : (float)a;
 }
 
+inline float parseFuelLevel(const std::string &h) {
+    long a = hexByte(h, 0);
+    return a < 0 ? NAN : (float)a * 100.0f / 255.0f;
+}
+
 }  // namespace parsers

@@ -12,9 +12,9 @@
 
 struct GaugeData {
     float boost_psi  = NAN;
-    float coolant_c  = NAN;
+    float fuel_pct   = NAN;
     float oil_temp_c = NAN;
-    float ethanol    = NAN;  // MHD flex fuel kit — Mode 22 PID 0x4010
+    float ethanol    = NAN;  // MHD flex fuel kit — Mode 22 PID 0x44DE
 };
 
 class ObdClient {
@@ -57,7 +57,7 @@ public:
         if (baro_fallback) baro_kpa = 101.325f;
         if (!isnan(map_kpa))
             data.boost_psi = (map_kpa - baro_kpa) * 0.145038f;
-        data.coolant_c  = _query("0105", parsers::parseCoolant);
+        data.fuel_pct   = _query("012F", parsers::parseFuelLevel);
         data.oil_temp_c = _query("015C", parsers::parseCoolant);  // Mode 01 standard oil temp
 
         if (_ethanolFails < SKIP_AFTER_FAILURES) {
@@ -66,17 +66,17 @@ public:
         }
 
         // One summary line per poll — decoded values at a glance.
-        char bstr[8], estr[8], cstr[8], ostr[8];
+        char bstr[8], estr[8], fstr[8], ostr[8];
         if (isnan(data.boost_psi))  snprintf(bstr, sizeof(bstr), "--");
         else                        snprintf(bstr, sizeof(bstr), "%.1f", data.boost_psi);
         if (isnan(data.ethanol))    snprintf(estr, sizeof(estr), "--");
         else                        snprintf(estr, sizeof(estr), "%.0f%%", data.ethanol);
-        if (isnan(data.coolant_c))  snprintf(cstr, sizeof(cstr), "--");
-        else                        snprintf(cstr, sizeof(cstr), "%.0fC", data.coolant_c);
+        if (isnan(data.fuel_pct))   snprintf(fstr, sizeof(fstr), "--");
+        else                        snprintf(fstr, sizeof(fstr), "%.0f%%", data.fuel_pct);
         if (isnan(data.oil_temp_c)) snprintf(ostr, sizeof(ostr), "--");
         else                        snprintf(ostr, sizeof(ostr), "%.0fC", data.oil_temp_c);
-        obd_log::write("[poll] B=%s E=%s C=%s O=%s%s",
-                       bstr, estr, cstr, ostr, baro_fallback ? " baro~" : "");
+        obd_log::write("[poll] B=%s E=%s F=%s O=%s%s",
+                       bstr, estr, fstr, ostr, baro_fallback ? " baro~" : "");
         return data;
     }
 
