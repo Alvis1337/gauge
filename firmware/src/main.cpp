@@ -345,7 +345,7 @@ static void serial_console_poll() {
                 Serial.printf("saved WiFi credentials for \"%s\" — 'ota' to check now, or reboot\n", ssid.c_str());
             }
         } else if (line == "ota") {
-            xTaskCreate([](void *) {
+            xTaskCreatePinnedToCore([](void *) {
                 std::string ssid = gSettings.wifiSsid();
                 if (ssid.empty()) {
                     Serial.println("no WiFi configured — use: wifi <ssid> <password>");
@@ -365,7 +365,7 @@ static void serial_console_poll() {
                 Serial.printf("ota result: %s\n", result.c_str());
                 gWifi.end();
                 vTaskDelete(nullptr);
-            }, "ota_cmd", 16384, nullptr, 1, nullptr);
+            }, "ota_cmd", 16384, nullptr, 1, nullptr, 1);
         } else if (line == "reboot") {
             ESP.restart();
         } else if (line == "touch") {

@@ -325,7 +325,7 @@ private:
 
         lv_label_set_text(_wifiListStatusLabel, "Scanning...");
         auto *self = this;
-        xTaskCreate([](void *arg) {
+        xTaskCreatePinnedToCore([](void *arg) {
             auto *self = (SettingsUI *)arg;
             self->_wifi->begin();
             auto results = self->_wifi->scan();
@@ -341,7 +341,7 @@ private:
             self->_wifiScanInProgress = false;
             portEXIT_CRITICAL(&self->_mux);
             vTaskDelete(nullptr);
-        }, "wifi_scan", 8192, self, 1, nullptr);
+        }, "wifi_scan", 8192, self, 1, nullptr, 1);
     }
 
     void _rebuildWifiList(const std::vector<WifiScanResult> &results) {
@@ -442,7 +442,7 @@ private:
 
         struct Ctx { SettingsUI *self; String ssid; String password; };
         auto *ctx = new Ctx{this, ssid, password};
-        xTaskCreate([](void *arg) {
+        xTaskCreatePinnedToCore([](void *arg) {
             auto *ctx = (Ctx *)arg;
             ctx->self->_wifi->begin();  // re-init WiFi (freed after scan to save heap)
             bool ok = ctx->self->_wifi->connect(ctx->ssid, ctx->password);
@@ -462,7 +462,7 @@ private:
             }
             delete ctx;
             vTaskDelete(nullptr);
-        }, "wifi_connect", 8192, ctx, 1, nullptr);
+        }, "wifi_connect", 8192, ctx, 1, nullptr, 1);
     }
 
     // ── touch calibration screen ─────────────────────────────────────────
@@ -712,7 +712,7 @@ private:
 
         lv_label_set_text(_obdListStatusLabel, "Scanning...");
         auto *self = this;
-        xTaskCreate([](void *arg) {
+        xTaskCreatePinnedToCore([](void *arg) {
             auto *self = (SettingsUI *)arg;
             auto results = bt_discovery::scan();
             portENTER_CRITICAL(&self->_mux);
@@ -721,7 +721,7 @@ private:
             self->_btScanInProgress = false;
             portEXIT_CRITICAL(&self->_mux);
             vTaskDelete(nullptr);
-        }, "obd_scan", 8192, self, 1, nullptr);
+        }, "obd_scan", 8192, self, 1, nullptr, 1);
     }
 
     void _rebuildObdList(const std::vector<BtScanResult> &results) {
@@ -843,10 +843,10 @@ private:
             return;
         }
         _setStatus("Rebooting to check for update...");
-        xTaskCreate([](void *) {
+        xTaskCreatePinnedToCore([](void *) {
             vTaskDelay(pdMS_TO_TICKS(1500));
             ESP.restart();
             vTaskDelete(nullptr);
-        }, "ota_reboot", 2048, nullptr, 1, nullptr);
+        }, "ota_reboot", 2048, nullptr, 1, nullptr, 1);
     }
 };

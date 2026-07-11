@@ -232,7 +232,7 @@ private:
         _setStatus("Connecting to WiFi...");
         struct Ctx { UpdateUI *self; };
         auto *ctx = new Ctx{this};
-        xTaskCreate([](void *arg) {
+        xTaskCreatePinnedToCore([](void *arg) {
             auto *ctx = (Ctx *)arg;
             obd_log::write("[upd] WiFi connecting...");
             ctx->self->_wifi->begin();
@@ -260,7 +260,7 @@ private:
             }
             delete ctx;
             vTaskDelete(nullptr);
-        }, "upd_wifi", 24576, ctx, 1, nullptr);
+        }, "upd_wifi", 24576, ctx, 1, nullptr, 1);
     }
 
     void _startOta() {
@@ -277,7 +277,7 @@ private:
         _setStatus("Checking for update...");
         struct Ctx { UpdateUI *self; };
         auto *ctx = new Ctx{this};
-        xTaskCreate([](void *arg) {
+        xTaskCreatePinnedToCore([](void *arg) {
             auto *ctx = (Ctx *)arg;
             obd_log::write("[upd] OTA check starting");
             String result = ota_updater::checkAndUpdate(*ctx->self->_settings);
@@ -290,7 +290,7 @@ private:
             ctx->self->_setStatus(upToDate ? "Firmware up to date" : "OTA: " + result);
             delete ctx;
             vTaskDelete(nullptr);
-        }, "upd_ota", 16384, ctx, 1, nullptr);
+        }, "upd_ota", 16384, ctx, 1, nullptr, 1);
     }
 
     void _startUpload() {
@@ -307,7 +307,7 @@ private:
         _setStatus("Uploading OBD log...");
         struct Ctx { UpdateUI *self; };
         auto *ctx = new Ctx{this};
-        xTaskCreate([](void *arg) {
+        xTaskCreatePinnedToCore([](void *arg) {
             auto *ctx = (Ctx *)arg;
             obd_log::write("[upd] manual upload...");
             std::string url = ctx->self->_settings->logWebhookUrl();
@@ -324,6 +324,6 @@ private:
             }
             delete ctx;
             vTaskDelete(nullptr);
-        }, "upd_log", 24576, ctx, 1, nullptr);
+        }, "upd_log", 24576, ctx, 1, nullptr, 1);
     }
 };
