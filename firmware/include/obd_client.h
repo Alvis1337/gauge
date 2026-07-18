@@ -20,6 +20,7 @@ struct GaugeData {
     float fuel_pct   = NAN;
     float oil_temp_c = NAN;
     float ethanol    = NAN;  // MHD flex fuel kit — Mode 22 PID 0x44DE
+    float rpm        = NAN;  // Mode 01 0x0C — drives the shift-light LED bar
 };
 
 class ObdClient {
@@ -64,13 +65,14 @@ public:
             data.boost_psi = (map_kpa - baro_kpa) * 0.145038f;
         data.fuel_pct   = _query("012F", parsers::parseFuelLevel);
         data.oil_temp_c = _query("015C", parsers::parseCoolant);
+        data.rpm        = _query("010C", parsers::parseRpm);
 
         if (_ethanolFails < SKIP_AFTER_FAILURES) {
             data.ethanol = _query("2244DE", parsers::parseEthanol, MODE22_TIMEOUT_MS);
             if (isnan(data.ethanol)) ++_ethanolFails; else _ethanolFails = 0;
         }
 
-        char bstr[8], estr[8], fstr[8], ostr[8];
+        char bstr[8], estr[8], fstr[8], ostr[8], rstr[8];
         if (isnan(data.boost_psi))  snprintf(bstr, sizeof(bstr), "--");
         else                        snprintf(bstr, sizeof(bstr), "%.1f", data.boost_psi);
         if (isnan(data.ethanol))    snprintf(estr, sizeof(estr), "--");
@@ -79,8 +81,10 @@ public:
         else                        snprintf(fstr, sizeof(fstr), "%.0f%%", data.fuel_pct);
         if (isnan(data.oil_temp_c)) snprintf(ostr, sizeof(ostr), "--");
         else                        snprintf(ostr, sizeof(ostr), "%.0fC", data.oil_temp_c);
-        obd_log::write("[poll] B=%s E=%s F=%s O=%s%s",
-                       bstr, estr, fstr, ostr, baro_fallback ? " baro~" : "");
+        if (isnan(data.rpm))        snprintf(rstr, sizeof(rstr), "--");
+        else                        snprintf(rstr, sizeof(rstr), "%.0f", data.rpm);
+        obd_log::write("[poll] B=%s E=%s F=%s O=%s R=%s%s",
+                       bstr, estr, fstr, ostr, rstr, baro_fallback ? " baro~" : "");
         return data;
     }
 

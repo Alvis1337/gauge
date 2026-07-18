@@ -34,4 +34,11 @@ inline float parseFuelLevel(const char *h, size_t len) {
     return a < 0 ? NAN : (float)a * 100.0f / 255.0f;
 }
 
+inline float parseRpm(const char *h, size_t len) {
+    long a = hexByte(h, len, 0);
+    long b = hexByte(h, len, 2);
+    if (a < 0 || b < 0) return NAN;
+    return (float)((a * 256) + b) / 4.0f;
+}
+
 }  // namespace parsers

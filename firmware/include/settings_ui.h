@@ -20,6 +20,7 @@
 #include "bt_discovery.h"
 #include "obd_log.h"
 #include "theme.h"
+#include "neopixel_output.h"
 
 // Defined in main.cpp — sets RTC flag then reboots into Update Mode so the
 // OBD log written this session is still readable for Discord upload.
@@ -27,16 +28,18 @@ void rebootToUpdateMode();
 
 class SettingsUI {
 public:
-    void init(GaugeSettings *settings, WifiManager *wifi, XPT2046Driver *touch) {
+    void init(GaugeSettings *settings, WifiManager *wifi, XPT2046Driver *touch, NeopixelOutput *leds) {
         _settings = settings;
         _wifi = wifi;
         _touch = touch;
+        _leds = leds;
         _buildSettingsScreen();
         _buildWifiListScreen();
         _buildWifiPasswordScreen();
         _buildTouchCalScreen();
         _buildObdScreen();
         _buildObdLogScreen();
+        _buildLedScreen();
         _refreshObdStatusLabel();
     }
 
@@ -106,6 +109,7 @@ private:
     GaugeSettings *_settings = nullptr;
     WifiManager *_wifi = nullptr;
     XPT2046Driver *_touch = nullptr;
+    NeopixelOutput *_leds = nullptr;
 
     lv_obj_t *_settingsScreen = nullptr;
     lv_obj_t *_wifiListScreen = nullptr;
@@ -114,6 +118,13 @@ private:
     lv_obj_t *_obdScreen = nullptr;
     lv_obj_t *_obdLogScreen = nullptr;
     lv_obj_t *_obdLogLabel = nullptr;
+    lv_obj_t *_ledScreen = nullptr;
+    lv_obj_t *_ledBarMinValueLabel = nullptr;
+    lv_obj_t *_ledShiftValueLabel = nullptr;
+    lv_obj_t *_ledBrightnessValueLabel = nullptr;
+    float _ledBarMinRpm = 2000.0f;
+    float _ledShiftRpm = 6500.0f;
+    int _ledBrightness = 80;
 
     lv_obj_t *_wifiStatusLabel = nullptr;
     lv_obj_t *_otaStatusLabel = nullptr;
@@ -250,10 +261,21 @@ private:
         lv_label_set_text(touchCalBtnLabel, "Touch Calibrate");
         lv_obj_center(touchCalBtnLabel);
 
+        lv_obj_t *ledBtn = lv_button_create(_settingsScreen);
+        lv_obj_set_size(ledBtn, 456, 40);
+        lv_obj_align(ledBtn, LV_ALIGN_TOP_MID, 0, 222);
+        lv_obj_add_event_cb(ledBtn, [](lv_event_t *e) {
+            auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            self->_openLedScreen();
+        }, LV_EVENT_CLICKED, this);
+        lv_obj_t *ledBtnLabel = lv_label_create(ledBtn);
+        lv_label_set_text(ledBtnLabel, "Shift Light");
+        lv_obj_center(ledBtnLabel);
+
         _otaStatusLabel = lv_label_create(_settingsScreen);
         lv_label_set_text(_otaStatusLabel, "");
         lv_obj_set_style_text_color(_otaStatusLabel, theme::subtext(), 0);
-        lv_obj_align(_otaStatusLabel, LV_ALIGN_TOP_MID, 0, 226);
+        lv_obj_align(_otaStatusLabel, LV_ALIGN_TOP_MID, 0, 270);
 
         lv_obj_t *backBtn = lv_button_create(_settingsScreen);
         lv_obj_set_size(backBtn, 456, 44);
@@ -699,6 +721,164 @@ private:
         } else {
             lv_scr_load(_settingsScreen);
         }
+    }
+
+    // ── Shift light (LED) screen ─────────────────────────────────────────
+    // Three stepper rows (bar-start RPM, shift RPM, brightness) staged in
+    // member floats/int until Save — matches neopixel_output.h's runtime
+    // applySettings() so tuning takes effect immediately, no reflash.
+    void _updateLedLabels() {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%d", (int)_ledBarMinRpm);
+        lv_label_set_text(_ledBarMinValueLabel, buf);
+        snprintf(buf, sizeof(buf), "%d", (int)_ledShiftRpm);
+        lv_label_set_text(_ledShiftValueLabel, buf);
+        snprintf(buf, sizeof(buf), "%d", _ledBrightness);
+        lv_label_set_text(_ledBrightnessValueLabel, buf);
+    }
+
+    void _openLedScreen() {
+        _ledBarMinRpm = _settings->ledBarMinRpm();
+        _ledShiftRpm = _settings->ledShiftRpm();
+        _ledBrightness = _settings->ledBrightness();
+        _updateLedLabels();
+        lv_scr_load(_ledScreen);
+    }
+
+    void _buildLedScreen() {
+        _ledScreen = lv_obj_create(nullptr);
+        lv_obj_set_style_bg_color(_ledScreen, lv_color_hex(0x111111), 0);
+        lv_obj_set_style_pad_all(_ledScreen, 12, 0);
+        lv_obj_clear_flag(_ledScreen, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *title = lv_label_create(_ledScreen);
+        lv_label_set_text(title, "Shift Light");
+        lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+        lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 0);
+
+        // Row: Bar Start RPM
+        lv_obj_t *barMinLabel = lv_label_create(_ledScreen);
+        lv_label_set_text(barMinLabel, "Bar Start RPM");
+        lv_obj_align(barMinLabel, LV_ALIGN_TOP_LEFT, 0, 58);
+
+        lv_obj_t *barMinMinus = lv_button_create(_ledScreen);
+        lv_obj_set_size(barMinMinus, 60, 40);
+        lv_obj_align(barMinMinus, LV_ALIGN_TOP_RIGHT, -140, 46);
+        lv_obj_add_event_cb(barMinMinus, [](lv_event_t *e) {
+            auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            self->_ledBarMinRpm = std::max(0.0f, self->_ledBarMinRpm - 100.0f);
+            self->_updateLedLabels();
+        }, LV_EVENT_CLICKED, this);
+        lv_obj_t *barMinMinusLabel = lv_label_create(barMinMinus);
+        lv_label_set_text(barMinMinusLabel, "-");
+        lv_obj_center(barMinMinusLabel);
+
+        _ledBarMinValueLabel = lv_label_create(_ledScreen);
+        lv_obj_align(_ledBarMinValueLabel, LV_ALIGN_TOP_RIGHT, -70, 58);
+
+        lv_obj_t *barMinPlus = lv_button_create(_ledScreen);
+        lv_obj_set_size(barMinPlus, 60, 40);
+        lv_obj_align(barMinPlus, LV_ALIGN_TOP_RIGHT, 0, 46);
+        lv_obj_add_event_cb(barMinPlus, [](lv_event_t *e) {
+            auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            self->_ledBarMinRpm = std::min(self->_ledShiftRpm - 100.0f, self->_ledBarMinRpm + 100.0f);
+            self->_updateLedLabels();
+        }, LV_EVENT_CLICKED, this);
+        lv_obj_t *barMinPlusLabel = lv_label_create(barMinPlus);
+        lv_label_set_text(barMinPlusLabel, "+");
+        lv_obj_center(barMinPlusLabel);
+
+        // Row: Shift RPM
+        lv_obj_t *shiftLabel = lv_label_create(_ledScreen);
+        lv_label_set_text(shiftLabel, "Shift RPM");
+        lv_obj_align(shiftLabel, LV_ALIGN_TOP_LEFT, 0, 122);
+
+        lv_obj_t *shiftMinus = lv_button_create(_ledScreen);
+        lv_obj_set_size(shiftMinus, 60, 40);
+        lv_obj_align(shiftMinus, LV_ALIGN_TOP_RIGHT, -140, 110);
+        lv_obj_add_event_cb(shiftMinus, [](lv_event_t *e) {
+            auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            self->_ledShiftRpm = std::max(self->_ledBarMinRpm + 100.0f, self->_ledShiftRpm - 100.0f);
+            self->_updateLedLabels();
+        }, LV_EVENT_CLICKED, this);
+        lv_obj_t *shiftMinusLabel = lv_label_create(shiftMinus);
+        lv_label_set_text(shiftMinusLabel, "-");
+        lv_obj_center(shiftMinusLabel);
+
+        _ledShiftValueLabel = lv_label_create(_ledScreen);
+        lv_obj_align(_ledShiftValueLabel, LV_ALIGN_TOP_RIGHT, -70, 122);
+
+        lv_obj_t *shiftPlus = lv_button_create(_ledScreen);
+        lv_obj_set_size(shiftPlus, 60, 40);
+        lv_obj_align(shiftPlus, LV_ALIGN_TOP_RIGHT, 0, 110);
+        lv_obj_add_event_cb(shiftPlus, [](lv_event_t *e) {
+            auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            self->_ledShiftRpm = std::min(9000.0f, self->_ledShiftRpm + 100.0f);
+            self->_updateLedLabels();
+        }, LV_EVENT_CLICKED, this);
+        lv_obj_t *shiftPlusLabel = lv_label_create(shiftPlus);
+        lv_label_set_text(shiftPlusLabel, "+");
+        lv_obj_center(shiftPlusLabel);
+
+        // Row: Brightness (0-255)
+        lv_obj_t *brightLabel = lv_label_create(_ledScreen);
+        lv_label_set_text(brightLabel, "Brightness");
+        lv_obj_align(brightLabel, LV_ALIGN_TOP_LEFT, 0, 186);
+
+        lv_obj_t *brightMinus = lv_button_create(_ledScreen);
+        lv_obj_set_size(brightMinus, 60, 40);
+        lv_obj_align(brightMinus, LV_ALIGN_TOP_RIGHT, -140, 174);
+        lv_obj_add_event_cb(brightMinus, [](lv_event_t *e) {
+            auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            self->_ledBrightness = std::max(10, self->_ledBrightness - 10);
+            self->_updateLedLabels();
+        }, LV_EVENT_CLICKED, this);
+        lv_obj_t *brightMinusLabel = lv_label_create(brightMinus);
+        lv_label_set_text(brightMinusLabel, "-");
+        lv_obj_center(brightMinusLabel);
+
+        _ledBrightnessValueLabel = lv_label_create(_ledScreen);
+        lv_obj_align(_ledBrightnessValueLabel, LV_ALIGN_TOP_RIGHT, -70, 186);
+
+        lv_obj_t *brightPlus = lv_button_create(_ledScreen);
+        lv_obj_set_size(brightPlus, 60, 40);
+        lv_obj_align(brightPlus, LV_ALIGN_TOP_RIGHT, 0, 174);
+        lv_obj_add_event_cb(brightPlus, [](lv_event_t *e) {
+            auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            self->_ledBrightness = std::min(255, self->_ledBrightness + 10);
+            self->_updateLedLabels();
+        }, LV_EVENT_CLICKED, this);
+        lv_obj_t *brightPlusLabel = lv_label_create(brightPlus);
+        lv_label_set_text(brightPlusLabel, "+");
+        lv_obj_center(brightPlusLabel);
+
+        lv_obj_t *saveBtn = lv_button_create(_ledScreen);
+        lv_obj_set_size(saveBtn, 456, 44);
+        lv_obj_align(saveBtn, LV_ALIGN_BOTTOM_MID, 0, -50);
+        lv_obj_set_style_bg_color(saveBtn, theme::success(), 0);
+        lv_obj_add_event_cb(saveBtn, [](lv_event_t *e) {
+            auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            self->_settings->setLedTuning(self->_ledBarMinRpm, self->_ledShiftRpm,
+                                          (uint8_t)self->_ledBrightness);
+            if (self->_leds) {
+                self->_leds->applySettings(self->_ledBarMinRpm, self->_ledShiftRpm,
+                                           (uint8_t)self->_ledBrightness);
+            }
+        }, LV_EVENT_CLICKED, this);
+        lv_obj_t *saveLabel = lv_label_create(saveBtn);
+        lv_label_set_text(saveLabel, "Save");
+        lv_obj_center(saveLabel);
+
+        lv_obj_t *backBtn = lv_button_create(_ledScreen);
+        lv_obj_set_size(backBtn, 456, 44);
+        lv_obj_align(backBtn, LV_ALIGN_BOTTOM_MID, 0, 0);
+        lv_obj_add_event_cb(backBtn, [](lv_event_t *e) {
+            auto *self = (SettingsUI *)lv_event_get_user_data(e);
+            lv_scr_load(self->_settingsScreen);
+        }, LV_EVENT_CLICKED, this);
+        lv_obj_t *backLabel = lv_label_create(backBtn);
+        lv_label_set_text(backLabel, "< Back");
+        lv_obj_center(backLabel);
     }
 
     // ── OBD adapter screen ────────────────────────────────────────────────

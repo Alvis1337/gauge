@@ -55,6 +55,19 @@ public:
     std::string logWebhookUrl() { return _prefs.getString("log_webhook", "").c_str(); }
     void setLogWebhookUrl(const std::string &v) { _prefs.putString("log_webhook", v.c_str()); }
 
+    // Shift-light LED bar tuning — see neopixel_output.h. Defaults match
+    // NeopixelOutput's placeholder constants; exposed here so they can be
+    // dialed in on-car without a reflash once the B58's real redline/shift
+    // point is confirmed.
+    float ledBarMinRpm() { return _prefs.getFloat("led_bar_min", 2000.0f); }
+    float ledShiftRpm() { return _prefs.getFloat("led_shift_rpm", 6500.0f); }
+    uint8_t ledBrightness() { return (uint8_t)_prefs.getInt("led_brightness", 80); }
+    void setLedTuning(float barMinRpm, float shiftRpm, uint8_t brightness) {
+        _prefs.putFloat("led_bar_min", barMinRpm);
+        _prefs.putFloat("led_shift_rpm", shiftRpm);
+        _prefs.putInt("led_brightness", brightness);
+    }
+
     // In-memory only (never persisted) — lets the settings UI tell
     // obd_task to retry right now after the address changes, instead of
     // waiting out whatever's left of the current backoff delay (up to

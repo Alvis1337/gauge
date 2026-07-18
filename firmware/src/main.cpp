@@ -17,6 +17,7 @@
 #include "ota_updater.h"
 #include "update_ui.h"
 #include "settings_ui.h"
+#include "neopixel_output.h"
 
 // ── pin map (see wiring table) ──────────────────────────────────────────────
 static constexpr int PIN_SCLK    = 18;
@@ -38,12 +39,19 @@ XPT2046Driver gTouch(PIN_TOUCH_CS, gSpi);
 GaugeSettings gSettings;
 WifiManager gWifi;
 SettingsUI gSettingsUi;
+NeopixelOutput gNeopixels;
 
 // ── shared OBD state (written by the BLE task, read by the UI loop) ────────
 struct SharedGaugeData {
     portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
     GaugeData data;
     bool connected = false;
+    // Incremented (under mux) each time a connect attempt fails. The status
+    // LED compares this against the last value it saw to detect a fresh
+    // failure and run its one-shot blink -- same dirty-flag idea as the rest
+    // of this project, just a counter instead of a bool since obd_task's
+    // retry loop can fail again before the LED finishes its last blink.
+    uint32_t obdFailSeq = 0;
 };
 SharedGaugeData gShared;
 
@@ -89,7 +97,6 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
 
 // ── gauge screen ─────────────────────────────────────────────────────────────
 GaugeWidget gBoostGauge, gEthanolGauge, gOilGauge, gFuelGauge;
-lv_obj_t *gConnDot = nullptr;
 lv_obj_t *gGaugeScreen = nullptr;
 
 // ── boot splash / mode select ─────────────────────────────────────────────────
@@ -225,15 +232,6 @@ static void build_gauge_screen() {
     gOilGauge.create(cell(0, 1),     "OIL",     40.0f, 150.0f, theme::oil(),     "%.0f C");
     gFuelGauge.create(cell(1, 1),    "FUEL %",   0.0f, 100.0f, theme::coolant(), "%.0f%%");
 
-    // Small connection-state dot, top-right — green = connected, red = not.
-    gConnDot = lv_obj_create(scr);
-    lv_obj_remove_style_all(gConnDot);
-    lv_obj_set_size(gConnDot, 10, 10);
-    lv_obj_set_style_radius(gConnDot, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(gConnDot, theme::danger(), 0);
-    lv_obj_set_style_bg_opa(gConnDot, LV_OPA_COVER, 0);
-    lv_obj_align(gConnDot, LV_ALIGN_TOP_RIGHT, -4, 4);
-
     // Long-press bottom-right corner -> Settings, same gesture as the Pi build.
     lv_obj_t *corner = lv_obj_create(scr);
     lv_obj_remove_style_all(corner);
@@ -246,16 +244,18 @@ static void build_gauge_screen() {
 static void update_gauge_screen() {
     GaugeData d;
     bool connected;
+    uint32_t obdFailSeq;
     portENTER_CRITICAL(&gShared.mux);
     d = gShared.data;
     connected = gShared.connected;
+    obdFailSeq = gShared.obdFailSeq;
     portEXIT_CRITICAL(&gShared.mux);
 
     gBoostGauge.setValue(d.boost_psi);
     gEthanolGauge.setValue(d.ethanol);
     gOilGauge.setValue(d.oil_temp_c);
     gFuelGauge.setValue(d.fuel_pct);
-    lv_obj_set_style_bg_color(gConnDot, connected ? theme::success() : theme::danger(), 0);
+    gNeopixels.update(d.rpm, connected, obdFailSeq);
 }
 
 // ── BLE OBD polling task (own core, blocks freely on BLE I/O) ──────────────
@@ -275,6 +275,7 @@ static void obd_task(void *) {
             consecutive_failures++;
             portENTER_CRITICAL(&gShared.mux);
             gShared.connected = false;
+            gShared.obdFailSeq++;
             portEXIT_CRITICAL(&gShared.mux);
         } else {
             consecutive_failures = 0;
@@ -496,8 +497,9 @@ void setup() {
     NimBLEDevice::init("AutoGauge");
 
     build_gauge_screen();
+    gNeopixels.begin(gSettings.ledBarMinRpm(), gSettings.ledShiftRpm(), gSettings.ledBrightness());
 
-    gSettingsUi.init(&gSettings, &gWifi, &gTouch);
+    gSettingsUi.init(&gSettings, &gWifi, &gTouch, &gNeopixels);
     gSettingsUi.setHomeScreen(gGaugeScreen);
 
     xTaskCreatePinnedToCore(obd_task, "obd_task", 12288, nullptr, 1, nullptr, 0);
