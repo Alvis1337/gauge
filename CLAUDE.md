@@ -20,6 +20,8 @@ most logic lives in `firmware/include/*.h`, with `firmware/src/main.cpp` as the 
 | LCD DC     | 26   |
 | LCD RST    | 25   |
 | Touch CS   | 27   |
+| NeoPixel bar data    | 4  |
+| NeoPixel status data | 16 |
 
 Display: MSP4021 4" panel, 480×320. Init sequence sets MADCTL argument `0x28`
 (cmd `0x36`; MV=1 landscape + RGB=1 BGR filter order) then issues INVON command `0x21`
@@ -29,6 +31,11 @@ pre-compensates (swaps R5↔B5 and inverts all channels + byte-swaps for big-end
 so every `lv_color_hex()` value in the app just works.
 
 SPI bus: both display and touch share VSPI. Display at 40MHz MODE0; touch at 1MHz MODE3.
+
+NeoPixel outputs: a 60-pixel RGBW (SK6812, GRBW order) shift-light bar on GPIO4, and a
+separate single-pixel RGBW status LED on GPIO16 — two physically distinct strips, own
+GPIO each, driven via the ESP32's RMT peripheral (hardware-clocked, not bit-banged) so
+neither stalls a core. See `firmware/include/neopixel_output.h`.
 
 ## Architecture
 
@@ -110,6 +117,7 @@ before it posts its result status. Rules:
 | `firmware/include/settings_ui.h` | Settings screen (WiFi, OBD adapter, touch cal, OBD log) |
 | `firmware/include/update_ui.h` | Update Mode UI (OTA check, log upload, webhook config) |
 | `firmware/include/gauge_widget.h` | Single gauge cell (arc + label) |
+| `firmware/include/neopixel_output.h` | Shift-light bar (GPIO4) + status LED (GPIO16); called from `loop()` every frame |
 | `firmware/include/wifi_manager.h` | Thin wrapper around Arduino WiFi — **no internal locking** |
 | `firmware/include/theme.h` | Color constants |
 | `firmware/include/obd_log.h` | Ring-buffer log (written from any task; `snapshot()` + `isDirty()` for UI) |

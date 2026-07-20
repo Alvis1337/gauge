@@ -13,6 +13,7 @@
 // no new locking needed.
 #pragma once
 #include <Adafruit_NeoPixel.h>
+#include <algorithm>
 #include <cmath>
 
 class NeopixelOutput {
@@ -34,9 +35,14 @@ public:
 
     // Called from the Settings UI when the user changes shift-light tuning
     // — no reflash needed to dial in the B58's actual redline/shift point.
+    // The Settings UI's stepper buttons already keep shiftRpm > barMinRpm,
+    // but _updateBar() divides by (shiftRpm - barMinRpm) every frame, so
+    // this guards against a bad value reaching here some other way (a
+    // hand-edited NVS blob, a future caller that skips the UI) rather than
+    // trusting the caller never to pass shiftRpm <= barMinRpm.
     void applySettings(float barMinRpm, float shiftRpm, uint8_t brightness) {
         _barMinRpm = barMinRpm;
-        _shiftRpm  = shiftRpm;
+        _shiftRpm  = std::max(shiftRpm, barMinRpm + 1.0f);
         _bar.setBrightness(brightness);
         _status.setBrightness(brightness);
     }

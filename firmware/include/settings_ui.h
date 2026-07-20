@@ -214,9 +214,13 @@ private:
         lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
         lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 0);
 
+        // Six rows (5 buttons + status label) have to fit above the fixed
+        // bottom-anchored back button within a 320px panel, so rows here
+        // are tighter (36px tall, 39px pitch) than the more spacious OBD/
+        // LED sub-screens, which only have 3-4 rows to place.
         lv_obj_t *wifiBtn = lv_button_create(_settingsScreen);
-        lv_obj_set_size(wifiBtn, 456, 40);
-        lv_obj_align(wifiBtn, LV_ALIGN_TOP_MID, 0, 46);
+        lv_obj_set_size(wifiBtn, 456, 36);
+        lv_obj_align(wifiBtn, LV_ALIGN_TOP_MID, 0, 40);
         lv_obj_add_event_cb(wifiBtn, [](lv_event_t *e) {
             auto *self = (SettingsUI *)lv_event_get_user_data(e);
             lv_obj_clean(self->_wifiListContainer);
@@ -228,8 +232,8 @@ private:
         lv_obj_center(_wifiStatusLabel);
 
         lv_obj_t *obdBtn = lv_button_create(_settingsScreen);
-        lv_obj_set_size(obdBtn, 456, 40);
-        lv_obj_align(obdBtn, LV_ALIGN_TOP_MID, 0, 90);
+        lv_obj_set_size(obdBtn, 456, 36);
+        lv_obj_align(obdBtn, LV_ALIGN_TOP_MID, 0, 79);
         lv_obj_add_event_cb(obdBtn, [](lv_event_t *e) {
             auto *self = (SettingsUI *)lv_event_get_user_data(e);
             self->_openObdScreen();
@@ -239,8 +243,8 @@ private:
         lv_obj_center(_obdStatusLabel);
 
         lv_obj_t *otaBtn = lv_button_create(_settingsScreen);
-        lv_obj_set_size(otaBtn, 456, 40);
-        lv_obj_align(otaBtn, LV_ALIGN_TOP_MID, 0, 134);
+        lv_obj_set_size(otaBtn, 456, 36);
+        lv_obj_align(otaBtn, LV_ALIGN_TOP_MID, 0, 118);
         lv_obj_set_style_bg_color(otaBtn, theme::ethanol(), 0);
         lv_obj_add_event_cb(otaBtn, [](lv_event_t *e) {
             auto *self = (SettingsUI *)lv_event_get_user_data(e);
@@ -251,8 +255,8 @@ private:
         lv_obj_center(otaBtnLabel);
 
         lv_obj_t *touchCalBtn = lv_button_create(_settingsScreen);
-        lv_obj_set_size(touchCalBtn, 456, 40);
-        lv_obj_align(touchCalBtn, LV_ALIGN_TOP_MID, 0, 178);
+        lv_obj_set_size(touchCalBtn, 456, 36);
+        lv_obj_align(touchCalBtn, LV_ALIGN_TOP_MID, 0, 157);
         lv_obj_add_event_cb(touchCalBtn, [](lv_event_t *e) {
             auto *self = (SettingsUI *)lv_event_get_user_data(e);
             self->_openTouchCal();
@@ -262,8 +266,8 @@ private:
         lv_obj_center(touchCalBtnLabel);
 
         lv_obj_t *ledBtn = lv_button_create(_settingsScreen);
-        lv_obj_set_size(ledBtn, 456, 40);
-        lv_obj_align(ledBtn, LV_ALIGN_TOP_MID, 0, 222);
+        lv_obj_set_size(ledBtn, 456, 36);
+        lv_obj_align(ledBtn, LV_ALIGN_TOP_MID, 0, 196);
         lv_obj_add_event_cb(ledBtn, [](lv_event_t *e) {
             auto *self = (SettingsUI *)lv_event_get_user_data(e);
             self->_openLedScreen();
@@ -274,8 +278,9 @@ private:
 
         _otaStatusLabel = lv_label_create(_settingsScreen);
         lv_label_set_text(_otaStatusLabel, "");
+        lv_obj_set_style_text_font(_otaStatusLabel, &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_color(_otaStatusLabel, theme::subtext(), 0);
-        lv_obj_align(_otaStatusLabel, LV_ALIGN_TOP_MID, 0, 270);
+        lv_obj_align(_otaStatusLabel, LV_ALIGN_TOP_MID, 0, 234);
 
         lv_obj_t *backBtn = lv_button_create(_settingsScreen);
         lv_obj_set_size(backBtn, 456, 44);
@@ -759,11 +764,11 @@ private:
         // Row: Bar Start RPM
         lv_obj_t *barMinLabel = lv_label_create(_ledScreen);
         lv_label_set_text(barMinLabel, "Bar Start RPM");
-        lv_obj_align(barMinLabel, LV_ALIGN_TOP_LEFT, 0, 58);
+        lv_obj_align(barMinLabel, LV_ALIGN_TOP_LEFT, 0, 46);
 
         lv_obj_t *barMinMinus = lv_button_create(_ledScreen);
-        lv_obj_set_size(barMinMinus, 60, 40);
-        lv_obj_align(barMinMinus, LV_ALIGN_TOP_RIGHT, -140, 46);
+        lv_obj_set_size(barMinMinus, 60, 36);
+        lv_obj_align(barMinMinus, LV_ALIGN_TOP_RIGHT, -140, 36);
         lv_obj_add_event_cb(barMinMinus, [](lv_event_t *e) {
             auto *self = (SettingsUI *)lv_event_get_user_data(e);
             self->_ledBarMinRpm = std::max(0.0f, self->_ledBarMinRpm - 100.0f);
@@ -774,11 +779,11 @@ private:
         lv_obj_center(barMinMinusLabel);
 
         _ledBarMinValueLabel = lv_label_create(_ledScreen);
-        lv_obj_align(_ledBarMinValueLabel, LV_ALIGN_TOP_RIGHT, -70, 58);
+        lv_obj_align(_ledBarMinValueLabel, LV_ALIGN_TOP_RIGHT, -70, 46);
 
         lv_obj_t *barMinPlus = lv_button_create(_ledScreen);
-        lv_obj_set_size(barMinPlus, 60, 40);
-        lv_obj_align(barMinPlus, LV_ALIGN_TOP_RIGHT, 0, 46);
+        lv_obj_set_size(barMinPlus, 60, 36);
+        lv_obj_align(barMinPlus, LV_ALIGN_TOP_RIGHT, 0, 36);
         lv_obj_add_event_cb(barMinPlus, [](lv_event_t *e) {
             auto *self = (SettingsUI *)lv_event_get_user_data(e);
             self->_ledBarMinRpm = std::min(self->_ledShiftRpm - 100.0f, self->_ledBarMinRpm + 100.0f);
@@ -791,11 +796,11 @@ private:
         // Row: Shift RPM
         lv_obj_t *shiftLabel = lv_label_create(_ledScreen);
         lv_label_set_text(shiftLabel, "Shift RPM");
-        lv_obj_align(shiftLabel, LV_ALIGN_TOP_LEFT, 0, 122);
+        lv_obj_align(shiftLabel, LV_ALIGN_TOP_LEFT, 0, 96);
 
         lv_obj_t *shiftMinus = lv_button_create(_ledScreen);
-        lv_obj_set_size(shiftMinus, 60, 40);
-        lv_obj_align(shiftMinus, LV_ALIGN_TOP_RIGHT, -140, 110);
+        lv_obj_set_size(shiftMinus, 60, 36);
+        lv_obj_align(shiftMinus, LV_ALIGN_TOP_RIGHT, -140, 86);
         lv_obj_add_event_cb(shiftMinus, [](lv_event_t *e) {
             auto *self = (SettingsUI *)lv_event_get_user_data(e);
             self->_ledShiftRpm = std::max(self->_ledBarMinRpm + 100.0f, self->_ledShiftRpm - 100.0f);
@@ -806,11 +811,11 @@ private:
         lv_obj_center(shiftMinusLabel);
 
         _ledShiftValueLabel = lv_label_create(_ledScreen);
-        lv_obj_align(_ledShiftValueLabel, LV_ALIGN_TOP_RIGHT, -70, 122);
+        lv_obj_align(_ledShiftValueLabel, LV_ALIGN_TOP_RIGHT, -70, 96);
 
         lv_obj_t *shiftPlus = lv_button_create(_ledScreen);
-        lv_obj_set_size(shiftPlus, 60, 40);
-        lv_obj_align(shiftPlus, LV_ALIGN_TOP_RIGHT, 0, 110);
+        lv_obj_set_size(shiftPlus, 60, 36);
+        lv_obj_align(shiftPlus, LV_ALIGN_TOP_RIGHT, 0, 86);
         lv_obj_add_event_cb(shiftPlus, [](lv_event_t *e) {
             auto *self = (SettingsUI *)lv_event_get_user_data(e);
             self->_ledShiftRpm = std::min(9000.0f, self->_ledShiftRpm + 100.0f);
@@ -823,11 +828,11 @@ private:
         // Row: Brightness (0-255)
         lv_obj_t *brightLabel = lv_label_create(_ledScreen);
         lv_label_set_text(brightLabel, "Brightness");
-        lv_obj_align(brightLabel, LV_ALIGN_TOP_LEFT, 0, 186);
+        lv_obj_align(brightLabel, LV_ALIGN_TOP_LEFT, 0, 146);
 
         lv_obj_t *brightMinus = lv_button_create(_ledScreen);
-        lv_obj_set_size(brightMinus, 60, 40);
-        lv_obj_align(brightMinus, LV_ALIGN_TOP_RIGHT, -140, 174);
+        lv_obj_set_size(brightMinus, 60, 36);
+        lv_obj_align(brightMinus, LV_ALIGN_TOP_RIGHT, -140, 136);
         lv_obj_add_event_cb(brightMinus, [](lv_event_t *e) {
             auto *self = (SettingsUI *)lv_event_get_user_data(e);
             self->_ledBrightness = std::max(10, self->_ledBrightness - 10);
@@ -838,11 +843,11 @@ private:
         lv_obj_center(brightMinusLabel);
 
         _ledBrightnessValueLabel = lv_label_create(_ledScreen);
-        lv_obj_align(_ledBrightnessValueLabel, LV_ALIGN_TOP_RIGHT, -70, 186);
+        lv_obj_align(_ledBrightnessValueLabel, LV_ALIGN_TOP_RIGHT, -70, 146);
 
         lv_obj_t *brightPlus = lv_button_create(_ledScreen);
-        lv_obj_set_size(brightPlus, 60, 40);
-        lv_obj_align(brightPlus, LV_ALIGN_TOP_RIGHT, 0, 174);
+        lv_obj_set_size(brightPlus, 60, 36);
+        lv_obj_align(brightPlus, LV_ALIGN_TOP_RIGHT, 0, 136);
         lv_obj_add_event_cb(brightPlus, [](lv_event_t *e) {
             auto *self = (SettingsUI *)lv_event_get_user_data(e);
             self->_ledBrightness = std::min(255, self->_ledBrightness + 10);
@@ -852,9 +857,12 @@ private:
         lv_label_set_text(brightPlusLabel, "+");
         lv_obj_center(brightPlusLabel);
 
+        // Stacked directly below the rows (not bottom-anchored) -- with
+        // only 3 rows here there's plenty of room, and a fixed row height
+        // is what caused the Brightness-row overlap in the first place.
         lv_obj_t *saveBtn = lv_button_create(_ledScreen);
-        lv_obj_set_size(saveBtn, 456, 44);
-        lv_obj_align(saveBtn, LV_ALIGN_BOTTOM_MID, 0, -50);
+        lv_obj_set_size(saveBtn, 456, 40);
+        lv_obj_align(saveBtn, LV_ALIGN_TOP_MID, 0, 196);
         lv_obj_set_style_bg_color(saveBtn, theme::success(), 0);
         lv_obj_add_event_cb(saveBtn, [](lv_event_t *e) {
             auto *self = (SettingsUI *)lv_event_get_user_data(e);
@@ -870,8 +878,8 @@ private:
         lv_obj_center(saveLabel);
 
         lv_obj_t *backBtn = lv_button_create(_ledScreen);
-        lv_obj_set_size(backBtn, 456, 44);
-        lv_obj_align(backBtn, LV_ALIGN_BOTTOM_MID, 0, 0);
+        lv_obj_set_size(backBtn, 456, 40);
+        lv_obj_align(backBtn, LV_ALIGN_TOP_MID, 0, 244);
         lv_obj_add_event_cb(backBtn, [](lv_event_t *e) {
             auto *self = (SettingsUI *)lv_event_get_user_data(e);
             lv_scr_load(self->_settingsScreen);

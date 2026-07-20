@@ -1,5 +1,6 @@
 .lgd-nfy0
 .claude/settings.local.json
+.DS_Store
 
 # PlatformIO build cache — regenerated from platformio.ini + lib_deps,
 # CI caches ~/.platformio instead of this

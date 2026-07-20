@@ -55,6 +55,15 @@ public:
         _transport.close();
     }
 
+    // Exposes _sendRaw for the serial console's "pid" debug command --
+    // lets an arbitrary Mode 01/22/etc. command be probed live (e.g. while
+    // hunting for the correct MHD ethanol-content address) without a
+    // reflash. Only obd_task may call this: it owns _transport.
+    bool sendRawCommand(const char *cmd, char *out, size_t out_len,
+                        uint32_t timeout_ms = DEFAULT_TIMEOUT_MS) {
+        return _sendRaw(cmd, timeout_ms, out, out_len);
+    }
+
     GaugeData poll() {
         GaugeData data;
         float map_kpa  = _query("010B", parsers::parseKpa);
@@ -68,6 +77,15 @@ public:
         data.rpm        = _query("010C", parsers::parseRpm);
 
         if (_ethanolFails < SKIP_AFTER_FAILURES) {
+            // BMW DMEs commonly ignore live-data DIDs outside an Extended
+            // Diagnostic Session (UDS service 0x10, subfunction 0x03) --
+            // sent here every time rather than once at connect, since the
+            // DME's S3 timer can revert it back to the default session
+            // between polls. Response isn't checked: if the session didn't
+            // take, the ethanol query below fails on its own and gets
+            // logged same as any other failure.
+            char sessResp[64];
+            _sendRaw("1003", DEFAULT_TIMEOUT_MS, sessResp, sizeof(sessResp));
             data.ethanol = _query("2244DE", parsers::parseEthanol, MODE22_TIMEOUT_MS);
             if (isnan(data.ethanol)) ++_ethanolFails; else _ethanolFails = 0;
         }

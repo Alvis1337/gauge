@@ -55,6 +55,20 @@ struct SharedGaugeData {
 };
 SharedGaugeData gShared;
 
+// Serial-console debug probe: "pid <hex>" sends an arbitrary raw OBD
+// command through obd_task's live connection and prints the raw response,
+// no reflash needed -- built for hunting the correct MHD ethanol-content
+// address. Only obd_task may touch ObdClient's transport, so the console
+// just posts a request here and obd_task services it on its next poll tick.
+struct ObdProbeRequest {
+    portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+    bool pending = false;
+    char cmd[16] = {0};
+    char response[200] = {0};
+    bool ready = false;
+};
+ObdProbeRequest gObdProbe;
+
 // ── LVGL plumbing ────────────────────────────────────────────────────────────
 // Partial-render buffers, 16 rows tall each (~15KB) rather than a full
 // frame — this is a slow-changing gauge UI, not video, so the extra flush
@@ -244,6 +258,24 @@ static void build_gauge_screen() {
 static void update_gauge_screen() {
     GaugeData d;
     bool connected;
+    portENTER_CRITICAL(&gShared.mux);
+    d = gShared.data;
+    connected = gShared.connected;
+    portEXIT_CRITICAL(&gShared.mux);
+
+    gBoostGauge.setValue(d.boost_psi);
+    gEthanolGauge.setValue(d.ethanol);
+    gOilGauge.setValue(d.oil_temp_c);
+    gFuelGauge.setValue(d.fuel_pct);
+}
+
+// Drives the shift bar + status LED every frame regardless of which screen
+// is active -- unlike update_gauge_screen()'s on-screen widgets, the
+// physical LEDs should keep reflecting live state even while the driver is
+// in Settings (e.g. tuning shift-light values and watching the bar react).
+static void update_neopixels() {
+    GaugeData d;
+    bool connected;
     uint32_t obdFailSeq;
     portENTER_CRITICAL(&gShared.mux);
     d = gShared.data;
@@ -251,10 +283,6 @@ static void update_gauge_screen() {
     obdFailSeq = gShared.obdFailSeq;
     portEXIT_CRITICAL(&gShared.mux);
 
-    gBoostGauge.setValue(d.boost_psi);
-    gEthanolGauge.setValue(d.ethanol);
-    gOilGauge.setValue(d.oil_temp_c);
-    gFuelGauge.setValue(d.fuel_pct);
     gNeopixels.update(d.rpm, connected, obdFailSeq);
 }
 
@@ -265,6 +293,24 @@ static void obd_task(void *) {
     int consecutive_failures = 0;
 
     for (;;) {
+        // Serve a pending "pid" probe immediately if we're not connected
+        // right now, rather than leaving the console hanging until (or if)
+        // a connection comes up.
+        bool notConnectedProbe = false;
+        portENTER_CRITICAL(&gObdProbe.mux);
+        if (gObdProbe.pending && !client.connected) {
+            notConnectedProbe = true;
+            gObdProbe.pending = false;
+        }
+        portEXIT_CRITICAL(&gObdProbe.mux);
+        if (notConnectedProbe) {
+            portENTER_CRITICAL(&gObdProbe.mux);
+            strncpy(gObdProbe.response, "not connected", sizeof(gObdProbe.response) - 1);
+            gObdProbe.response[sizeof(gObdProbe.response) - 1] = '\0';
+            gObdProbe.ready = true;
+            portEXIT_CRITICAL(&gObdProbe.mux);
+        }
+
         std::string address = gSettings.obdBtAddress();
         if (address.empty()) {
             obd_log::write("[obd] no address set");
@@ -291,6 +337,27 @@ static void obd_task(void *) {
                 // reconnect after saving a new pick) — reconnect fresh
                 // rather than keep polling whatever we're currently on.
                 if (current != address || gSettings.consumeObdReconnectRequest()) break;
+
+                bool doProbe = false;
+                char probeCmd[16];
+                portENTER_CRITICAL(&gObdProbe.mux);
+                if (gObdProbe.pending) {
+                    doProbe = true;
+                    strncpy(probeCmd, gObdProbe.cmd, sizeof(probeCmd) - 1);
+                    probeCmd[sizeof(probeCmd) - 1] = '\0';
+                    gObdProbe.pending = false;
+                }
+                portEXIT_CRITICAL(&gObdProbe.mux);
+                if (doProbe) {
+                    char resp[200];
+                    bool ok = client.sendRawCommand(probeCmd, resp, sizeof(resp));
+                    portENTER_CRITICAL(&gObdProbe.mux);
+                    strncpy(gObdProbe.response, ok ? resp : "(send failed)", sizeof(gObdProbe.response) - 1);
+                    gObdProbe.response[sizeof(gObdProbe.response) - 1] = '\0';
+                    gObdProbe.ready = true;
+                    portEXIT_CRITICAL(&gObdProbe.mux);
+                }
+
                 GaugeData d = client.poll();
                 portENTER_CRITICAL(&gShared.mux);
                 gShared.data = d;
@@ -325,8 +392,23 @@ static void obd_task(void *) {
 // Non-blocking USB-serial command console — lets WiFi/OTA/touch be tested
 // and debugged without a working touchscreen (added while chasing the
 // touch wiring issue, but useful for headless bring-up generally).
-// Commands: "wifi <ssid> <password>", "ota", "reboot", "touch", "status".
+// Commands: "wifi <ssid> <password>", "ota", "reboot", "touch", "status",
+// "pid <hex command>" (e.g. "pid 2244DE" or "pid 1003").
 static void serial_console_poll() {
+    // Print a probe response the instant obd_task posts one, independent of
+    // whether a new line just came in over Serial.
+    bool probeReady;
+    char probeResp[200];
+    portENTER_CRITICAL(&gObdProbe.mux);
+    probeReady = gObdProbe.ready;
+    if (probeReady) {
+        strncpy(probeResp, gObdProbe.response, sizeof(probeResp) - 1);
+        probeResp[sizeof(probeResp) - 1] = '\0';
+        gObdProbe.ready = false;
+    }
+    portEXIT_CRITICAL(&gObdProbe.mux);
+    if (probeReady) Serial.printf("pid response: %s\n", probeResp);
+
     static String line;
     while (Serial.available()) {
         char c = (char)Serial.read();
@@ -382,6 +464,20 @@ static void serial_console_poll() {
             std::string url = line.substring(8).c_str();
             gSettings.setLogWebhookUrl(url);
             Serial.printf("saved webhook URL: \"%s\"\n", url.c_str());
+        } else if (line.startsWith("pid ")) {
+            String cmd = line.substring(4);
+            cmd.trim();
+            if (cmd.isEmpty()) {
+                Serial.println("usage: pid <hex command, e.g. 2244DE or 1003>");
+            } else {
+                portENTER_CRITICAL(&gObdProbe.mux);
+                strncpy(gObdProbe.cmd, cmd.c_str(), sizeof(gObdProbe.cmd) - 1);
+                gObdProbe.cmd[sizeof(gObdProbe.cmd) - 1] = '\0';
+                gObdProbe.pending = true;
+                gObdProbe.ready = false;
+                portEXIT_CRITICAL(&gObdProbe.mux);
+                Serial.printf("pid %s: sent, waiting for response...\n", cmd.c_str());
+            }
         } else if (line == "status") {
             Serial.printf("free heap: %u bytes\n", ESP.getFreeHeap());
             Serial.printf("wifi ssid: \"%s\"\n", gSettings.wifiSsid().c_str());
@@ -418,7 +514,7 @@ static void serial_console_poll() {
             // Restore SPI MISO pin function
             gSpi.begin(PIN_SCLK, PIN_MISO, PIN_MOSI, -1);
         } else if (!line.isEmpty()) {
-            Serial.println("commands: wifi <ssid> [password] | ota | reboot | touch | gpio | webhook <url> | log | status");
+            Serial.println("commands: wifi <ssid> [password] | ota | reboot | touch | gpio | webhook <url> | log | status | pid <hex>");
         }
         line = "";
     }
@@ -509,6 +605,7 @@ void loop() {
     uint32_t frame_start = millis();
     lv_timer_handler();
     if (lv_scr_act() == gGaugeScreen) update_gauge_screen();
+    update_neopixels();
     gSettingsUi.poll();
     serial_console_poll();
     // Target ~16ms per frame without adding 16ms on top of however long
